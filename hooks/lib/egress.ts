@@ -199,7 +199,7 @@ export function shellSegments(command: string): string[][] {
       if (SHELL_UNWRAP_BINS.has(head)) {
         const idx = tokens.findIndex((t) => t === '-c')
         if (idx !== -1 && tokens[idx + 1] !== undefined) {
-          queue.push(stripQuotes(tokens[idx + 1]))
+          queue.push(stripQuotes(tokens.slice(idx + 1).join(' ')))
           continue
         }
       }
@@ -252,7 +252,7 @@ const CLOUD_BINS: ReadonlySet<string> = new Set(['aws', 'gsutil', 'gcloud', 'az'
 function targetsOnlyLocalhost(raw: string): boolean {
   const urls = raw.match(/https?:\/\/[^\s"'`)]+/gi)
   if (!urls || urls.length === 0) return false
-  return urls.every((u) => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?=[:/\s"'?]|$)/i.test(u))
+  return urls.every((u) => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?=[/\s"'?]|$)/i.test(u))
 }
 
 function netClientMatch(call: EgressCall): boolean {
@@ -317,11 +317,12 @@ function forgeMatch(call: EgressCall): boolean {
     const sub = (seg[1] ?? '').toLowerCase()
     if (!sub) continue
     if (sub === 'api') {
-      if (/(?:^|\s)(?:-X|--method)\s+(?:POST|PUT|PATCH|DELETE)\b/i.test(raw)) return true
-      if (/(?:^|\s)(?:-f|-F|--field|--raw-field)\b/.test(raw)) return true
+      const text = seg.join(' ')
+      if (/(?:^|\s)(?:-X|--method)\s+(?:POST|PUT|PATCH|DELETE)\b/i.test(text)) return true
+      if (/(?:^|\s)(?:-f|-F|--field|--raw-field)\b/.test(text)) return true
       continue
     }
-    if (seg.slice(2).some((t) => FORGE_MUTATING_VERBS.has(t.toLowerCase()))) return true
+    if (FORGE_MUTATING_VERBS.has((seg[2] ?? '').toLowerCase())) return true
   }
   return false
 }
@@ -365,10 +366,18 @@ function cloudMatch(call: EgressCall): boolean {
 }
 
 // A shell write to a persistence surface: a redirection target, a write binary
-// argument, or a `sed -i` target that matches PERSISTENCE_PATH_PATTERNS. The
+// destination, or a `sed -i` target that matches PERSISTENCE_PATH_PATTERNS. The
 // `sed -i` + path-anywhere raw rule (report §5.4) closes the one quoting-evasion
 // case the prototype's per-segment pass missed (`sed -i "...|sh" ~/.bashrc`).
 const PERSIST_WRITE_BINS: ReadonlySet<string> = new Set(['tee', 'cp', 'mv', 'install', 'ln', 'rsync', 'dd'])
+
+function persistDestinations(seg: string[]): string[] {
+  const args = seg.slice(1)
+  if (seg[0] === 'dd') return args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3))
+  const positional = args.filter((a) => !a.startsWith('-'))
+  if (seg[0] === 'tee') return positional
+  return positional.slice(-1)
+}
 
 function persistShellMatch(call: EgressCall): boolean {
   const raw = rawCommand(call)
@@ -385,7 +394,7 @@ function persistShellMatch(call: EgressCall): boolean {
   const segs = shellSegments(raw)
   // (b) a write binary with a persistence-path argument.
   for (const seg of segs) {
-    if (PERSIST_WRITE_BINS.has(seg[0]) && seg.slice(1).some(matchesPath)) return true
+    if (PERSIST_WRITE_BINS.has(seg[0]) && persistDestinations(seg).some(matchesPath)) return true
   }
   // (c) raw rule: `sed -i` present + a persistence-path token present (§5.4).
   // This closes the quoting-evasion case (`sed -i "...|sh" ~/.bashrc`) that a
