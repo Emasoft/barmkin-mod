@@ -15,6 +15,8 @@
 // A alone: each class keeps its own posture (deny, or warn).
 // A and B together: every class denies, whatever its posture, until a human
 // prompt clears both legs.
+// A off: the call passes, except a `warnWhenClean` class (the destructive
+// tier), which warns. Nothing fires as a deny without leg A.
 
 import { OUTWARD_EFFECT_PATTERNS } from './taint'
 
@@ -38,6 +40,10 @@ export interface EgressClass {
   match?: (call: EgressCall) => boolean
   // What leg A alone does to a matching call. Leg A with leg B always denies.
   onUntrusted: EgressPosture
+  // Warn on a clean session too (leg A off). Set only by the destructive
+  // classes: destruction is advisory when untainted and denied when tainted,
+  // never denied unconditionally. Every other class passes a clean session.
+  warnWhenClean?: boolean
 }
 
 export const SHELL_TOOLS: readonly string[] = ['Bash', 'PowerShell']
@@ -436,6 +442,84 @@ function persistShellMatch(call: EgressCall): boolean {
   return false
 }
 
+// ---------------------------------------------------------------------------
+// Destructive commands (report data/exfil-destructive-plan-scout, family b).
+//
+// Destruction leaks nothing, so the Rule of Two's B/C legs do not describe it;
+// but the policy here is the same one-leg rule as every other class: it
+// fires only while the session is tainted. Clean, a match warns; tainted
+// (leg A), it denies. There is no unconditional tier. The detection shapes
+// are the report's Appendix B shapes (D1: root/home/system/secret targets and
+// block devices; D2: git history rewrites), validated 25/25 and 9/9 against
+// the attack corpora with 0/40 false positives on routine work.
+// ---------------------------------------------------------------------------
+
+// A secret-bearing path fragment, shared by the D1 shapes. Mirrors
+// SECRET_PATH_PATTERNS (a `.env` template is not exempted here: overwriting one
+// beside a real `.env` is still a destructive credential-path write).
+const SENS_SRC =
+  '(?:(?:^|[\\s"\'=:~/])\\.(?:ssh|aws|gnupg|npmrc|netrc|git-credentials)\\b)|\\.config\\/gh\\b|\\.(?:docker|kube)\\b|' +
+  '(?:^|[\\s"\'=:~/])\\.env(?:\\.[\\w.-]+)?\\b|\\/proc\\/(?:self|\\d+)\\/environ|\\.claude\\/\\.credentials'
+const SENS = new RegExp(SENS_SRC)
+
+// `/`, `/*`, or a system root directory with anything beneath it. A deep path
+// (`/opt/app/cache`, `/var/lib/x`) is a deliberate match: the report's section 5
+// residual. `/home/<other>/...` is not a system root and stays clear.
+const SYSROOT = /^\/(?:(?:etc|usr|var|bin|sbin|lib|lib64|boot|dev|sys|proc|opt|root)(?:\/\S*)?|\*?)$/
+
+// The running user's home as the whole target: `~`, `~/`, `~/*`, `$HOME`,
+// `${HOME}`. A path beneath it (`~/proj/dist`) is ordinary cleanup.
+const HOME_TARGET = /^(?:~|\$HOME|\$\{HOME\})\/?\*?$/
+
+function rmDestructive(seg: string[]): boolean {
+  if (seg[0] !== 'rm') return false
+  let recursive = false
+  let force = false
+  const targets: string[] = []
+  for (const arg of seg.slice(1)) {
+    if (arg === '--recursive') recursive = true
+    else if (arg === '--force') force = true
+    else if (arg === '--no-preserve-root') {
+      recursive = true
+      force = true
+      targets.push('/')
+    } else if (/^-[A-Za-z]+$/.test(arg)) {
+      if (/[rR]/.test(arg)) recursive = true
+      if (arg.includes('f')) force = true
+    } else if (!arg.startsWith('-')) targets.push(arg)
+  }
+  if (!recursive || !force) return false
+  return targets.some((t) => HOME_TARGET.test(t) || SYSROOT.test(t) || SENS.test(t))
+}
+
+function destructiveRmMatch(call: EgressCall): boolean {
+  const raw = rawCommand(call)
+  return raw !== null && shellSegments(raw).some(rmDestructive)
+}
+
+const D1_PATTERNS: readonly RegExp[] = [
+  new RegExp('\\b(?:chmod|chown)\\b[^\\n]*(?:' + SENS_SRC + ')', 'i'), // chmod/chown a secret
+  new RegExp('\\bshred\\b[^\\n]*(?:\\/dev\\/|' + SENS_SRC + ')', 'i'),
+  /\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|hd|vd|mmcblk|disk|rdisk|sr\d)/i,
+  /\b(?:mkfs(?:\.\w+)?|wipefs)\b[^\n]*\/dev\//i,
+  new RegExp('\\bsed\\b[^\\n]*\\s-i\\S*[^\\n]*(?:' + SENS_SRC + ')', 'i'), // in-place edit of a credential file
+  new RegExp(
+    '>\\s*["\']?(?:~\\/|\\$HOME\\/|\\/)?[^\\n"\'<>|]*(?:' + SENS_SRC + ')|authorized_keys\\b[^\\n]*<|>\\s*[^\\n]*authorized_keys',
+    'i',
+  ),
+]
+
+// D2: git history rewrites and broad destruction. `git branch -D` (force) is
+// case-sensitive on purpose: `-d` (delete a merged branch) is routine and safe.
+const D2_PATTERNS: readonly RegExp[] = [
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bgit\s+push\b[^\n]*(?:--force\b|--force-with-lease\b|-f\b)[^\n]*\b(?:main|master)\b|\bgit\s+push\b[^\n]*\b(?:main|master)\b[^\n]*(?:--force\b|-f\b)/i,
+  /\bgit\s+clean\b[^\n]*\s-[a-z]*(?:f[a-z]*d|d[a-z]*f)/i,
+  /\bgit\s+branch\s+-[a-zA-Z]*D[a-zA-Z]*\b|\bgit\s+update-ref\s+-d\b/,
+]
+
+const destructiveMatch = (call: EgressCall): boolean => destructiveRmMatch(call) || commandMatches(D1_PATTERNS)(call)
+
 function monitorWebSocket(call: EgressCall): boolean {
   return call.input.ws != null
 }
@@ -468,7 +552,7 @@ export const PERSISTENCE_PATH_PATTERNS: readonly RegExp[] = [
   /(?:^|\/)\.vscode\/(?:tasks|settings|launch)\.json$/,
   /(?:^|\/)\.devcontainer\//,
   /(?:^|\/)package\.json$/,
-  /(?:^|\/)Makefile$/,
+  /(?:^|\/)(?:Makefile|GNUmakefile)$/,
   /(?:^|\/)\.envrc$/,
   /(?:^|\/)\.pre-commit-config\.yaml$/,
   /(?:^|\/)\.config\/fish\//,
@@ -558,6 +642,22 @@ export const EGRESS_CLASSES: readonly EgressClass[] = [
     tools: COMMAND_TOOLS,
     match: persistShellMatch,
     onUntrusted: 'warn',
+  },
+  {
+    id: 'destructive',
+    description: 'a destructive command (a recursive delete, wipe or permission change on a root, home, system or credential path or a block device)',
+    tools: COMMAND_TOOLS,
+    match: destructiveMatch,
+    onUntrusted: 'deny',
+    warnWhenClean: true,
+  },
+  {
+    id: 'history-rewrite',
+    description: 'a git history rewrite or force-delete (reset --hard, force-push to main, clean -fd, branch -D)',
+    tools: COMMAND_TOOLS,
+    match: commandMatches(D2_PATTERNS),
+    onUntrusted: 'deny',
+    warnWhenClean: true,
   },
   {
     id: 'web-fetch',
@@ -653,7 +753,19 @@ function clearHint(legs: TrifectaLegs): string {
 
 // Never returns an allow: a pass leaves the call to whatever else decided it.
 export function decideEgress(classes: readonly EgressClass[], legs: TrifectaLegs): EgressVerdict {
-  if (classes.length === 0 || !legs.untrusted) return { kind: 'pass' }
+  if (classes.length === 0) return { kind: 'pass' }
+  if (!legs.untrusted) {
+    const advisory = classes.filter((c) => c.warnWhenClean)
+    if (advisory.length === 0) return { kind: 'pass' }
+    return {
+      kind: 'warn',
+      classIds: advisory.map((c) => c.id),
+      message:
+        'barmkin-mod: this call is ' +
+        describeClasses(advisory).toLowerCase() +
+        '. Confirm with the user that they asked for it. It would be blocked if this session handled untrusted content.',
+    }
+  }
   const classIds = classes.map((c) => c.id)
   const untrusted = 'untrusted content (' + (legs.untrustedReason ?? 'unspecified') + ')'
 

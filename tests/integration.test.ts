@@ -2041,3 +2041,34 @@ test('a worst-case result at the 1 MiB total is redacted by the hook well inside
   expect(out.deny).toBeUndefined()
   expect(elapsed < 3000).toBe(true)
 })
+
+// ---------------------------------------------------------------------------
+// Destructive tier: taint-gated. Clean it warns; tainted it denies.
+// ---------------------------------------------------------------------------
+
+test('destructive class: a clean session is warned, never denied; a tainted one is denied', async ($, on) => {
+  on('tool.call', ($: any, e: any) => (e.tool === 'WebFetch' ? { result: INJECTION } : { result: 'ok' }))
+  const clean = await $.tool.call({ tool: 'Bash', command: 'git reset --hard HEAD~1' })
+  expect(clean.deny).toBeUndefined()
+  expect(JSON.stringify(clean)).toContain('git history rewrite')
+  const cleanHome = await $.tool.call({ tool: 'Bash', command: 'rm -rf ~/.ssh' })
+  expect(cleanHome.deny).toBeUndefined()
+
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  const tainted = await $.tool.call({ tool: 'Bash', command: 'git push --force origin main' })
+  expect(tainted.deny).toContain('git history rewrite')
+  const routine = await $.tool.call({ tool: 'Bash', command: 'rm -rf node_modules' })
+  expect(routine.deny).toBeUndefined()
+})
+
+test('destructive class: tool.check on a clean session is not denied, a tainted one is', async ($, on) => {
+  on('tool.check', () => ({ decision: 'allow' }))
+  on('tool.call', ($: any, e: any) => (e.tool === 'WebFetch' ? { result: INJECTION } : { result: 'ok' }))
+  const clean = await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf /etc' }, tool_use_id: 'toolu_01abc' })
+  expect(clean.decision).toBe('allow')
+  const inline = await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf /etc' }, tool_use_id: '' })
+  expect(inline.decision).toBe('allow')
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  const tainted = await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf /etc' }, tool_use_id: 'toolu_01abd' })
+  expect(tainted.decision).toBe('deny')
+})
