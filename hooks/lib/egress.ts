@@ -122,6 +122,7 @@ function mcpWriteTool(call: EgressCall): boolean {
 
 const SHELL_WRAPPERS: ReadonlySet<string> = new Set([
   'sudo', 'env', 'command', 'exec', 'nohup', 'time', 'nice', 'builtin', 'then', 'do', 'else',
+  'timeout', 'xargs', 'stdbuf', 'setsid', 'ionice',
 ])
 const SHELL_UNWRAP_BINS: ReadonlySet<string> = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
 
@@ -141,7 +142,12 @@ function segmentTokens(piece: string): string[] {
   const tokens = piece.trim().split(/\s+/).filter(Boolean)
   let sawWrapper = false
   while (tokens.length > 0) {
-    const t = tokens[0]
+    const t = tokens[0].replace(/^[({\\]+/, '')
+    if (t === '') {
+      tokens.shift()
+      continue
+    }
+    tokens[0] = t
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
       tokens.shift()
       continue
@@ -152,7 +158,7 @@ function segmentTokens(piece: string): string[] {
       continue
     }
     // After a wrapper, skip its own options (sudo -u, env -i) to reach the head.
-    if (sawWrapper && t.startsWith('-')) {
+    if (sawWrapper && (t.startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(t))) {
       tokens.shift()
       continue
     }
@@ -174,15 +180,18 @@ export function shellSegments(command: string): string[][] {
     let cmd = queue.shift() as string
     // Pull substitution bodies out so their inner commands are classified too,
     // and so their separators do not fragment the outer segment.
-    cmd = cmd
-      .replace(/\$\(([^()]*)\)/g, (_m, inner: string) => {
-        queue.push(inner)
-        return ' '
-      })
-      .replace(/`([^`]*)`/g, (_m, inner: string) => {
-        queue.push(inner)
-        return ' '
-      })
+    for (let prev = ''; prev !== cmd; ) {
+      prev = cmd
+      cmd = cmd
+        .replace(/\$\(([^()]*)\)/g, (_m, inner: string) => {
+          queue.push(inner)
+          return ' '
+        })
+        .replace(/`([^`]*)`/g, (_m, inner: string) => {
+          queue.push(inner)
+          return ' '
+        })
+    }
     for (const piece of cmd.split(/\|\||&&|[|;&\n]/)) {
       const tokens = segmentTokens(piece)
       if (tokens.length === 0) continue
@@ -208,12 +217,12 @@ function rawCommand(call: EgressCall): string | null {
 // Shell exfil-signal detectors, all tested on the raw command (§5.1).
 // ---------------------------------------------------------------------------
 
-// Command substitution and braced parameter expansion: the dangerous form that
+// Command substitution: the dangerous form that
 // runs a command and embeds its output into a URL/argument. A bare `$VAR` is
 // deliberately NOT a signal on its own -- it is ordinary parameter use and far
 // too common in routine commands to gate on without false positives (§5, the
 // low-FP mandate); every exfil form in the corpus uses `$(...)`/backtick.
-const SUBSTITUTION = /\$\(|`|\$\{/
+const SUBSTITUTION = /\$\(|`/
 
 // curl/wget request-body and upload flags (what turns a fetch into a send).
 const CURL_WGET_BODY =
@@ -259,8 +268,10 @@ function netClientMatch(call: EgressCall): boolean {
       return true
     }
   }
-  if (heads.some((h) => NET_TRANSFER_BINS.has(h))) {
-    if ((CURL_WGET_BODY.test(raw) || subst) && !(targetsOnlyLocalhost(raw) && !subst)) return true
+  for (const seg of shellSegments(raw)) {
+    if (!NET_TRANSFER_BINS.has(seg[0])) continue
+    const text = seg.join(' ')
+    if ((CURL_WGET_BODY.test(text) || subst) && !(targetsOnlyLocalhost(text) && !subst)) return true
   }
   if (heads.some((h) => NET_REMOTE_BINS.has(h))) {
     if (REMOTE_SPEC.test(raw)) return true
@@ -278,9 +289,9 @@ function dnsMatch(call: EgressCall): boolean {
 
 const INTERP_INLINE_FLAG = /(?:^|\s)(?:-c|-e|-E|-r|--eval)\b/
 const INTERP_NET_TOKEN =
-  /\bfetch\s*\(|\brequests?\.(?:get|post|put|delete|request|session)\b|\burllib\b|\burlopen\b|\bsocket\./i
+  /\bfetch\s*\(|\brequests?\.(?:get|post|put|delete|request|session)\b|\burllib\b|\burlopen\b|\bsocket\s*\(|\.connect\s*\(|\bTCPSocket\b/i
 const INTERP_NET_TOKEN2 =
-  /\bsmtplib\b|\/dev\/tcp|Net::HTTP|\bLWP\b|fsockopen|file_get_contents|https?:\/\/|http\.request|require\(\s*['"]https?['"]\s*\)/i
+  /\bsmtplib\b|\/dev\/tcp|Net::HTTP|\bLWP\b|fsockopen|file_get_contents\s*\(\s*['"]https?:|http\.request|require\(\s*['"]https?['"]\s*\)/i
 
 function interpreterNetMatch(call: EgressCall): boolean {
   const raw = rawCommand(call)
