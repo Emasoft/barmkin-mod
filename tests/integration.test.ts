@@ -3,7 +3,7 @@
 // per-capability files that test the pure hooks/lib/*.ts helpers directly.
 // Only the events the docs confirm a test can fire directly are used here:
 // $.tool.call, $.command.run, $.prompt.submit, $.session.receive.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 test('redacts a secret from a Bash tool result before Claude reads it', async ($, on) => {
   on('tool.call', () => ({ result: 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE' }))
@@ -1437,4 +1437,35 @@ test('a Read outside cwd between 16 KiB and the cap is withheld by its screen, w
   expect(JSON.stringify(out)).toContain("withheld this file's content")
   expect(JSON.stringify(out)).toContain('smaller pieces')
   expect(JSON.stringify(out)).not.toContain('line 10 of the build log')
+})
+
+// ---------------------------------------------------------------------------
+// The classifier timeout is real, and the breaker counts parallel failures.
+// ---------------------------------------------------------------------------
+
+test('a classifier answer slower than the timeout is dropped and counts toward the breaker', JEV, async ($, on) => {
+  const clock = mock.clock(on)
+  on('http.fetch', async () => {
+    await clock.sleep(5000)
+    return { value: { ok: true, status: 200, text: noul(0.95) } }
+  })
+  on('tool.call', () => ({ result: 'short page' }))
+  for (let i = 0; i < 3; i++) {
+    let out: any
+    const call = $.tool.call({ tool: 'WebFetch', url: 'https://example.com' }).then((o: any) => (out = o))
+    await clock.settle()
+    await clock.advance(700)
+    await clock.settle()
+    expect(out?.result).toBe('short page')
+    await clock.advance(5000)
+    await call
+  }
+  expect(await statusText($)).toContain('classifier breaker: open')
+})
+
+test('breaker: screens failing in parallel are each counted and open it', JEV, async ($, on) => {
+  on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }))
+  on('tool.call', () => ({ result: 'short page' }))
+  await Promise.all([1, 2, 3].map(() => $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })))
+  expect(await statusText($)).toContain('classifier breaker: open')
 })

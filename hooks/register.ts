@@ -179,7 +179,9 @@ const JEV_QUESTIONS: Record<string, NoulQuestion> = {
 // before it leaves for the third-party endpoint. Never throws:
 // every failure path returns { ok: false, reason }, which screenContent
 // treats as "classifier unavailable" and falls back to heuristics -- it
-// never silently treats a failure as a pass.
+// never silently treats a failure as a pass. `$.http.fetch` takes no abort
+// signal, so the timeout races the request instead of cancelling it; a late
+// answer is dropped.
 async function callJevSystemOne(
   $: any,
   jev: JevOptions,
@@ -187,9 +189,23 @@ async function callJevSystemOne(
 ): Promise<SystemOneParseResult> {
   if (input === null) return { ok: false, reason: 'withheld_input' }
   const text = input.slice(0, CLASSIFIER_WINDOW_CHARS)
+  let timer: { cancel: () => void } | null = null
+  const timeout = new Promise<SystemOneParseResult>((resolve) => {
+    try {
+      timer = $.clock.after(JEV_TIMEOUT_MS, () => resolve({ ok: false, reason: 'timeout' }))
+    } catch {
+      // A host that refuses timers degrades to an untimed call.
+    }
+  })
+  try {
+    return await Promise.race([requestJevSystemOne($, jev, text), timeout])
+  } finally {
+    timer?.cancel()
+  }
+}
+
+async function requestJevSystemOne($: any, jev: JevOptions, text: string): Promise<SystemOneParseResult> {
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
-  const controller = new AbortController()
-  const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
   try {
     const response = await $.http.fetch(jev.baseUrl + '/v1/systemone', {
       method: 'POST',
@@ -198,7 +214,6 @@ async function callJevSystemOne(
         ...(jev.apiKey ? { Authorization: 'Bearer ' + jev.apiKey } : {}),
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
     })
     if (!response.ok) {
       return { ok: false, reason: 'http_' + response.status }
@@ -212,8 +227,6 @@ async function callJevSystemOne(
     return parseSystemOneResponse(parsed, Object.keys(JEV_QUESTIONS), JEV_MODEL_PATTERN)
   } catch (error) {
     return { ok: false, reason: 'network: ' + String(error) }
-  } finally {
-    timer.cancel()
   }
 }
 
@@ -370,8 +383,9 @@ async function taintForScrub($: any, hiddenCount: number, source: string): Promi
 }
 
 async function recordBreakerFailure($: any): Promise<void> {
-  const failures = (await read($, breakerFailureCount)) + 1
-  await update($, breakerFailureCount, () => failures)
+  // update() retries on a version miss, so failures from screens running in
+  // parallel are each counted.
+  const failures = await update($, breakerFailureCount, (n: number) => n + 1)
   if (failures >= BREAKER_FAILURE_THRESHOLD) {
     await update($, breakerOpenUntil, () => Date.now() + BREAKER_COOLDOWN_MS)
   }
