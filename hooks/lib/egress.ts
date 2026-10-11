@@ -197,7 +197,7 @@ export function shellSegments(command: string): string[][] {
       if (tokens.length === 0) continue
       const head = basename(tokens[0])
       if (SHELL_UNWRAP_BINS.has(head)) {
-        const idx = tokens.findIndex((t) => t === '-c')
+        const idx = tokens.findIndex((t) => /^-[a-z]*c$/.test(t))
         if (idx !== -1 && tokens[idx + 1] !== undefined) {
           queue.push(stripQuotes(tokens.slice(idx + 1).join(' ')))
           continue
