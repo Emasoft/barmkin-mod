@@ -20,13 +20,27 @@ A security layer for Claude Code, packaged as a Claude Code mods plugin. It reda
 
 ### Egress classes
 
-The gate recognises these outward effects:
+The gate recognises these outward effects. Shell classes read the `command` of a
+`Bash`, `PowerShell` or `Monitor` call; each identifies the real head binary of
+every pipeline and subshell segment (past `sudo`, `env VAR=`, inline `VAR=` and a
+`bash -c '…'` wrapper) and tests the exfil signal — command substitution, body
+flags, redirection, a remote spec — against the raw command.
 
-- Outward-effect shell commands: `git push`, `curl` with a body, `scp` to a host, a pipe to `sh`, and similar.
-- Web fetches, since the URL is itself a channel.
-- MCP write-class tools: names containing verbs such as `create`, `send`, `post`, `update` or `delete`.
-- Skill loads.
-- Writes to persistence surfaces: `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, CI workflows, git hooks, shell rc files, `~/.ssh` and `~/.local/bin`.
+- Outward-effect shell commands (`shell-outward`): `git push`, `curl` with a body, `scp` to a host, a pipe to `sh`, and similar. *Denies on A alone.*
+- Network clients (`net-client`): `curl`/`wget` with a body flag or a `$(…)`/backtick URL substitution, the socket tools `nc`/`ncat`/`socat`/`telnet`/`ftp`, `/dev/tcp` and `/dev/udp`, and `ssh`/`scp`/`sftp`/`rsync` to a remote. `nc -z` port scans and local-only copies are excluded; a `curl`/`wget` to `localhost` without substitution is exempt. *Denies on A alone.*
+- DNS/probe exfil (`dns`): `nslookup`/`dig`/`host`/`ping`/`traceroute`/… with a substituted name. *Warns on A alone.*
+- Forge writes (`forge`): mutating `gh`/`glab` (`issue`/`pr`/`gist`/`release`/… create/comment/edit/upload/…), and `gh api` with a `POST`/`PUT`/`PATCH`/`DELETE` method or a `-f`/`-F`/`--field` body — the Comment-and-Control channel. Read verbs stay clear. *Warns on A alone.*
+- Package/image publishes (`publish`): `npm`/`pnpm`/`yarn`/`bun`/`cargo publish`, `docker`/`podman push`, `twine upload`, `gem push`. `--dry-run` is excluded. *Warns on A alone.*
+- Cloud object-store uploads (`cloud`): `aws s3 cp|mv|sync`, `aws s3api put-object`, `gsutil`/`gcloud storage cp|rsync`, `az storage … upload`. Read ops stay clear. *Warns on A alone.*
+- Inline interpreter network calls (`interpreter-net`): `python`/`node`/`deno`/`ruby`/`perl`/`php` run with `-c`/`-e`/`--eval` where the inline script makes a network call (`urlopen`, `fetch(`, `requests.get`, a `socket(`/`.connect(` call, `http.request`, `/dev/tcp`, …); a bare URL literal or `socket.gethostname()` is not enough. *Denies on A alone.*
+- Shell writes to persistence surfaces (`persist-shell`): a redirection, `tee`/`cp`/`mv`/`install`/`ln`/`rsync`/`dd`, or a `sed -i` whose destination is a persistence path (the last argument for `cp`/`mv`/`install`/`ln`/`rsync`, `of=` for `dd`, so reading one as a source does not warn). *Warns on A alone.*
+- Web fetches (`web-fetch`) and web searches (`web-search`), since the URL and the query are each a channel. *Fetch denies, search warns, on A alone.*
+- Monitor WebSockets (`monitor-ws`): a `Monitor` call opening an outbound `ws`. *Denies on A alone.*
+- MCP write-class tools (`mcp-write`): names containing verbs such as `create`, `send`, `post`, `update`, `delete`, `save`, `set`, `insert` or `upsert`. The ambiguous `run`/`execute`/`request` are not treated as writes.
+- Skill loads (`skill-load`).
+- File-tool writes to persistence surfaces (`persistence`): `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, CI workflows, git hooks, shell rc files, `~/.ssh`, `~/.local/bin`, `.vscode/{tasks,settings,launch}.json`, `.devcontainer/`, `package.json`, `Makefile`, `.envrc`, `.pre-commit-config.yaml` and `.config/fish/`. `package.json` and `Makefile` are edited constantly, so these only warn (never deny) on A alone.
+
+The shell classes are a naive tokenizer, not a shell parser: quoting tricks (`c''url`, a `|` inside a quoted string, base64-wrapped binaries) evade them. That is inherent — the Bash sandbox's egress allowlist is the enforcement floor beneath them (see Limits).
 
 The classifier reads only the first 4,000 characters of a piece of content, after redaction. With Jev configured, untrusted content longer than that taints the session even when nothing in it looks like an injection, because the rest was never classified. This taint needs an explicit acknowledgement: a later message, `/clear` or compaction does not clear it, whatever `taint_clear` is set to, and only `/barmkin-mod-clear-taint` from a person does. Without Jev configured, the classifier is not claimed to have read anything, so length alone does not taint.
 

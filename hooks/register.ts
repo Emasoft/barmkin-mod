@@ -641,7 +641,8 @@ async function mcpGuardCatch($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 // One gate for every egress class that is not an MCP call or a skill load:
-// shell commands, web fetches and persistence-surface writes. A deny answers
+// shell commands (Bash/PowerShell and Monitor's `command`), web fetches and
+// searches, Monitor WebSockets, and persistence-surface writes. A deny answers
 // before the tool runs; a warn lets it run and tells Claude.
 async function egressGuardHook($: any, e: any, next: any) {
   const egress = await egressGate($, { tool: e.tool, input: e })
@@ -1167,12 +1168,12 @@ export function register(on: any, options: Record<string, unknown>) {
 
   on('tool.call', redactionHook).catch(redactionCatch)
   on('tool.call', { tool: /^mcp__/ }, mcpGuardHook).catch(mcpGuardCatch)
-  on('tool.call', { tool: ['Bash', 'PowerShell', 'WebFetch', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, egressGuardHook).catch(egressGuardCatch)
+  on('tool.call', { tool: ['Bash', 'PowerShell', 'WebFetch', 'WebSearch', 'Monitor', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, egressGuardHook).catch(egressGuardCatch)
   on('tool.call', { tool: ['WebFetch', 'WebSearch'] }, webFetchTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: 'Read' }, readTaintHook).catch(taintScreenCatch)
 
   on('tool.call', { tool: 'Skill' }, skillToolGuardHook).catch(skillToolGuardCatch)
-  on('tool.check', { tool: ['Bash', 'PowerShell'] }, toolCheckGuardHook).catch(toolCheckGuardCatch)
+  on('tool.check', { tool: ['Bash', 'PowerShell', 'Monitor'] }, toolCheckGuardHook).catch(toolCheckGuardCatch)
 
   on('skill.prompt', skillPromptHook).catch(skillPromptCatch)
   on('prompt.attachment', { type: 'skill_listing' }, skillListingHook).catch(skillListingCatch)
