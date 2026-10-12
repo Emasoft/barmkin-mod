@@ -42,9 +42,13 @@ flags, redirection, a remote spec — against the raw command.
 
 The shell classes are a naive tokenizer, not a shell parser: quoting tricks (`c''url`, a `|` inside a quoted string, base64-wrapped binaries) evade them. That is inherent — the Bash sandbox's egress allowlist is the enforcement floor beneath them (see Limits).
 
-The classifier reads only the first 4,000 characters of a piece of content, after redaction. With Jev configured, untrusted content longer than that taints the session even when nothing in it looks like an injection, because the rest was never classified. This taint needs an explicit acknowledgement: a later message, `/clear` or compaction does not clear it, whatever `taint_clear` is set to, and only `/barmkin-mod-clear-taint` from a person does. Without Jev configured, the classifier is not claimed to have read anything, so length alone does not taint.
+The classifier reads untrusted content after redaction, in overlapping windows of 4,000 characters (each window repeats the last 512 characters of the one before), up to five windows, which is enough for the 16 KiB limit. The windows are asked in parallel, a window that failed for a transient reason (a timeout, a network error, a 429 or a 5xx) is asked once more, and each question's highest score over the windows decides, so Jev can still only raise a score. A window that scores taints the session as usual, and a message clears that taint. With Jev configured, content that spans more than one window and has part the classifier could not read (a window that still failed after its retry, the classifier breaker open, or text past the fifth window) taints the session even when nothing in it looks like an injection, because that part was never classified. This taint needs an explicit acknowledgement: a later message, `/clear` or compaction does not clear it, whatever `taint_clear` is set to, and only `/barmkin-mod-clear-taint` from a person does. Length alone does not taint: content every window read raises no acknowledgement, and without Jev configured the classifier is not claimed to have read anything. A screen counts as one classifier-breaker event however many windows it took.
 
-Sensitive access (leg B) is set when a call touches a secret path such as `~/.ssh`, `~/.aws`, `.env` or `.git-credentials`, when a redaction rule fires on a tool result, or when the classifier reports credentials in the content.
+A withheld result tells Claude which screen flagged it and nothing more. The exact probability stays in the status command, the HUD and the permission notice, so a payload cannot be tuned against it.
+
+With Jev configured, each window is also put to a four-question shadow screen: prompt injection, data exfiltration, contains-secrets and destructive commands, under one shared instruction, in two wordings (the captain's text with the edits that asking each question alone forces, and a revised wording that names screener-directed text and the scope rules), so the live pilot can compare them. The shadow answers are recorded and shown in `/barmkin-mod-status` and the permission notice, merged over the windows by highest score. They are annotation only: they never taint the session, withhold a result, set sensitive access or gate a call, and the destructive-command question never taints. The shadow screen has its own breaker, so a shadow failure cannot degrade the real screen or turn the HUD amber. Enforcement on the new questions is off until shadow data and the pilot say what the thresholds should be. The questions are frozen constants (`hooks/lib/jev-questions.ts`) with a SHA-256 pinned in the tests, and no setting, event or screened content reaches them.
+
+Sensitive access (leg B) is set when a call touches a secret path such as `~/.ssh`, `~/.aws`, `.env` or `.git-credentials`, when a redaction rule fires on a tool result, or when the classifier reports credentials in the content, whichever question drove the verdict (content that scores on both injection and credentials sets both legs).
 
 ## Requirements
 
@@ -81,8 +85,8 @@ At session start the mod runs a posture self-check and emits one concise line pe
 
 | Command | Description |
 |---|---|
-| `/barmkin-mod-status` | Show taint, circuit-breaker state and the last classifier verdict. |
-| `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. The only way to clear a taint for content past the classifier's 4,000-character window. |
+| `/barmkin-mod-status` | Show taint, circuit-breaker state, the last classifier verdict and the last shadow-screen scores. |
+| `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. The only way to clear a taint for content the classifier could not read. |
 
 A clear session shows one line directly beneath the mode-switcher line under the prompt: green `🏰 Barmkin session guard active` when Jev is configured and its classifier breaker is closed (this does not claim any request succeeded), or amber `🏰 Barmkin session guard degraded` when Jev is not configured or the breaker is open. A single red line above the prompt (`🚨 TAINTED: untrusted content active · 🚫 outbound actions may be restricted · 🧹 clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
 
@@ -98,6 +102,8 @@ hooks/lib/              pure, unit-tested logic
   mcp-guard.ts          tool-description hardening
   skill-guard.ts        skill body and listing guards
   system-one-client.ts  classifier wire format
+  jev-questions.ts      the frozen classifier questions and their pinned wording
+  classifier-windows.ts classifier windows and score merging
   posture.ts            posture checks
 tests/                  one test file per lib module, plus integration
 .claude-plugin/         plugin manifest and option schema
@@ -121,6 +127,6 @@ Guarding hooks fail closed: if one errors, the action is denied or the content w
 - Size limits. Every redaction rule runs in time linear in the text, so a tool result is scanned whole up to 256 KiB per string and 1 MiB per result. Past those limits:
   - A string over 256 KiB in a result that no injection screen covers (Bash, Grep, Glob, a Read inside the working directory) shows a scanned prefix of about 12 KiB, cut at a line or delimiter that no secret match crosses, followed by a note with the shown and total character counts and how to page: `Read` with `offset` and `limit`, or a narrower command. The hidden part is never shown and never matched, and invisible text anywhere in the string still counts toward the taint threshold. If no safe cut exists, the result is withheld.
   - A result whose strings together pass 1 MiB, and a Read image past about 190 KiB, are withheld, since a prefix of either is not useful.
-- Untrusted content is withheld over 16 KiB, never cut: web fetches and searches, MCP results, reads outside the working directory, skill bodies, peer messages, your prompts and outbound messages. The classifier reads 4,000 characters of such content, so more text would be mostly unscreened. The withhold message says it is a size limit and tells Claude to fetch the content in smaller pieces rather than ask you.
-- With Jev configured, the classifier sees only the first 4,000 characters of redacted content; longer content taints the session until acknowledged with `/barmkin-mod-clear-taint`.
+- Untrusted content is withheld over 16 KiB, never cut: web fetches and searches, MCP results, reads outside the working directory, skill bodies, peer messages, your prompts and outbound messages. The classifier reads such content in up to five overlapping 4,000-character windows. The withhold message says it is a size limit and tells Claude to fetch the content in smaller pieces rather than ask you.
+- With Jev configured, the classifier endpoint receives up to about 18,000 characters of redacted untrusted content per screen, in up to five requests, plus one more request per window for each shadow wording (below). Content with a part the classifier could not read taints the session until acknowledged with `/barmkin-mod-clear-taint`.
 - Secret rules are a hand-maintained copy of barmkin's. Keep them in sync when barmkin changes.

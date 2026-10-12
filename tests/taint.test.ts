@@ -14,6 +14,7 @@ import {
   describeTaintClear,
   describeTaintBanner,
   classifierGapReason,
+  credentialScoreReason,
   CLASSIFIER_WINDOW_CHARS,
   DEFAULT_TAINT_THRESHOLDS,
 } from '../hooks/lib/taint'
@@ -150,6 +151,34 @@ test('composeScreen uses the local scores alone when Jev did not answer', () => 
   const result = composeScreen({ model: 'heuristic', injection: 0, credentials: 0 }, null)
   expect(result.decision).toBe('pass')
   expect(result.model).toBe('heuristic')
+})
+
+test('composeScreen reports each question\'s composed score, whichever question drove the decision', () => {
+  const result = composeScreen(
+    { model: 'heuristic', injection: 0.1, credentials: 0.9 },
+    { model: 'jev-1.13.0', injection: 0.6, credentials: 0.2 },
+  )
+  expect(result.question).toBe('injection')
+  expect(result.scores).toEqual({ injection: 0.6, credentials: 0.9 })
+})
+
+test('composeScreen keeps the credentials score when injection drives, so leg B can follow it', () => {
+  const result = composeScreen({ model: 'heuristic', injection: 0, credentials: 0 }, { model: 'jev-1.13.0', injection: 0.6, credentials: 0.9 })
+  expect(result.question).toBe('injection')
+  expect(result.scores.credentials).toBeGreaterThanOrEqual(DEFAULT_TAINT_THRESHOLDS.taintAt)
+})
+
+test('composeScreen\'s withhold reason names the screen and carries no probability', () => {
+  const result = composeScreen({ model: 'heuristic', injection: 0, credentials: 0 }, { model: 'jev-1.13.0', injection: 0.93, credentials: 0.05 })
+  expect(result.decision).toBe('deny')
+  expect(result.reason).toContain('0.93')
+  expect(result.withholdReason).toContain('injection screen')
+  expect(result.withholdReason).not.toMatch(/\d\.\d/)
+})
+
+test('credentialScoreReason is the reason classifyContent gives for a credentials taint', () => {
+  expect(classifyContent(0, 0.9).reason).toBe(credentialScoreReason(0.9))
+  expect(credentialScoreReason(0.9)).toContain('0.90 on the credential-presence question')
 })
 
 test('promptClearsTaint clears for a person: the composer and the bridge', () => {
@@ -396,27 +425,33 @@ test('inlineShellDenyReason denies an outward-effect command and a credential re
 })
 
 test('classifierGapReason is null without Jev, however long the content is', () => {
-  expect(classifierGapReason(false, CLASSIFIER_WINDOW_CHARS * 10)).toBeNull()
-  expect(classifierGapReason(false, null)).toBeNull()
+  expect(classifierGapReason(false, CLASSIFIER_WINDOW_CHARS * 10, CLASSIFIER_WINDOW_CHARS * 10)).toBeNull()
+  expect(classifierGapReason(false, null, 0)).toBeNull()
 })
 
-test('classifierGapReason is null for redacted content that fits the window', () => {
+test('classifierGapReason is null for redacted content that fits the window, whether or not Jev answered', () => {
   expect(CLASSIFIER_WINDOW_CHARS).toBe(4000)
-  expect(classifierGapReason(true, 0)).toBeNull()
-  expect(classifierGapReason(true, 200)).toBeNull()
-  expect(classifierGapReason(true, CLASSIFIER_WINDOW_CHARS)).toBeNull()
+  expect(classifierGapReason(true, 0, 0)).toBeNull()
+  expect(classifierGapReason(true, 200, 200)).toBeNull()
+  expect(classifierGapReason(true, CLASSIFIER_WINDOW_CHARS, CLASSIFIER_WINDOW_CHARS)).toBeNull()
 })
 
-test('classifierGapReason names the length and the window for content that does not fit', () => {
-  const reason = classifierGapReason(true, CLASSIFIER_WINDOW_CHARS + 1)
-  expect(reason).toContain('4001 characters')
-  expect(reason).toContain('4000-character window')
+test('classifierGapReason is null for long content every window read: length alone is no gap', () => {
+  expect(classifierGapReason(true, CLASSIFIER_WINDOW_CHARS + 1, 0)).toBeNull()
+  expect(classifierGapReason(true, 17000, 0)).toBeNull()
+})
+
+test('classifierGapReason names what went unread for long content a window could not read', () => {
+  const reason = classifierGapReason(true, CLASSIFIER_WINDOW_CHARS + 1, 513)
+  expect(reason).toContain('513 of 4001 characters')
+  expect(reason).toContain('could not read')
   expect(reason).toContain('never classified')
 })
 
-test('classifierGapReason treats withheld redacted text as past the window', () => {
-  const reason = classifierGapReason(true, null)
-  expect(reason).toContain('4000-character window')
+test('classifierGapReason treats withheld redacted text as unread', () => {
+  const reason = classifierGapReason(true, null, 0)
+  expect(reason).toContain('scan limit')
+  expect(reason).toContain('never classified')
   expect(reason).not.toContain('null')
 })
 
@@ -439,7 +474,7 @@ test('commandMayClearTaint lets a person acknowledge, and refuses every other or
 test('describeTaintBanner for a taint needing acknowledgement names why and the command alone, in either posture', () => {
   for (const posture of ['human-origin', 'sticky'] as const) {
     const line = describeTaintBanner(posture, false, true)
-    expect(line).toContain('unscreened content past the classifier window')
+    expect(line).toContain('content the classifier could not read')
     expect(line).toContain('run /barmkin-mod-clear-taint to acknowledge')
     expect(line).toContain('messages and /clear do not')
     expect(line).not.toContain('next message')

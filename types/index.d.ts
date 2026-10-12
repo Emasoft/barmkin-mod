@@ -50,6 +50,26 @@ declare module 'claude-code' {
       // classifier calls and the HUD's "semantic check unavailable" state.
       breakerOpenUntil: number
       breakerFailureCount: number
+
+      // The four-question shadow screen's own breaker. Separate from the pair
+      // above so a shadow failure never degrades the real screen or the HUD.
+      shadowBreakerOpenUntil: number
+      shadowBreakerFailureCount: number
+
+      // What the shadow screen answered for the last piece of content, per
+      // wording arm. Annotation only: nothing taints, withholds or gates on it.
+      lastShadow: {
+        toolUseId: string
+        label: string
+        arms: {
+          arm: string
+          answered: number
+          windows: number
+          model: string | null
+          scores: Record<string, number>
+        }[]
+        at: number
+      } | null
     }
   }
 }

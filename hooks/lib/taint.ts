@@ -123,34 +123,39 @@ export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint):
 export function describeTaintBanner(posture: TaintClearPosture, sensitive: boolean, ackRequired = false): string {
   const restriction = sensitive ? '\u{1F6AB} all outbound actions blocked' : '\u{1F6AB} outbound actions may be restricted'
   const clear = ackRequired
-    ? '\u{1F9F9} unscreened content past the classifier window: run /barmkin-mod-clear-taint to acknowledge (messages and /clear do not)'
+    ? '\u{1F9F9} content the classifier could not read: run /barmkin-mod-clear-taint to acknowledge (messages and /clear do not)'
     : posture === 'sticky'
       ? '\u{1F9F9} clear: /barmkin-mod-clear-taint or /clear (messages do not)'
       : '\u{1F9F9} clear: your next message or /barmkin-mod-clear-taint'
   return '\u{1F6A8} TAINTED: untrusted content active \u00B7 ' + restriction + ' \u00B7 ' + clear
 }
 
-// How much of a piece of content the Jev classifier reads: the payload is cut
-// to this many characters of its redacted text before it is sent.
+// How much of a piece of content one Jev classifier request reads: the redacted
+// text is cut into windows of this many characters (classifier-windows.ts).
 export const CLASSIFIER_WINDOW_CHARS = 4000
 
-// The classifier gap: with Jev configured, redacted content longer than its
-// window is only partly classified, and the heuristics cannot vouch for the
-// rest. Such content taints the session and the taint needs a person's
+// The classifier gap: with Jev configured, redacted content longer than one
+// window is classified window by window. A window that did not answer (an
+// endpoint failure, a timeout after its retry, an open breaker) or text past
+// the last window is only read by the heuristics, which cannot vouch for it.
+// Such content taints the session and the taint needs a person's
 // acknowledgement (the reason returned here is what that acknowledgement
-// covers). `redactedLength` is null when the redacted text was withheld for
-// exceeding the scan limit, which is longer than the window by definition.
-// Without Jev configured nothing is claimed to be classified, so there is no
-// gap to acknowledge.
-export function classifierGapReason(jevConfigured: boolean, redactedLength: number | null): string | null {
+// covers). Length alone is no gap: content every window read raises none.
+// Content that fits one window degrades to the heuristics on a failure, as it
+// does with no Jev configured. `redactedLength` is null when the redacted text
+// was withheld for exceeding the scan limit, so none of it was classified;
+// `unclassified` counts the characters of the redacted text no answered window
+// covered. Without Jev configured nothing is claimed to be classified, so there
+// is no gap to acknowledge.
+export function classifierGapReason(jevConfigured: boolean, redactedLength: number | null, unclassified: number): string | null {
   if (!jevConfigured) return null
-  if (redactedLength !== null && redactedLength <= CLASSIFIER_WINDOW_CHARS) return null
+  if (redactedLength === null) return "content past the classifier's scan limit, so it was never classified"
+  if (redactedLength <= CLASSIFIER_WINDOW_CHARS || unclassified <= 0) return null
   return (
-    'content' +
-    (redactedLength === null ? '' : ' of ' + redactedLength + ' characters') +
-    ' past the classifier\'s ' +
-    CLASSIFIER_WINDOW_CHARS +
-    '-character window, so part of it was never classified'
+    unclassified +
+    ' of ' +
+    redactedLength +
+    ' characters of content the classifier could not read, so that part was never classified'
   )
 }
 
@@ -183,6 +188,13 @@ export interface ContentClassification {
   question: ScreenQuestion
 }
 
+// Why a credentials score is worth a leg-B (sensitive access) mark. Shared by
+// classifyContent's taint reason and the mark itself, which is set from the
+// credentials score whatever question drove the decision.
+export function credentialScoreReason(credentialProb: number, thresholds: TaintThresholds = DEFAULT_TAINT_THRESHOLDS): string {
+  return `content scored ${credentialProb.toFixed(2)} on the credential-presence question (>= ${thresholds.taintAt})`
+}
+
 export function classifyContent(
   injectionProb: number,
   credentialProb: number,
@@ -208,7 +220,7 @@ export function classifyContent(
     return {
       decision: 'escalate',
       tainted: true,
-      reason: `content scored ${credentialProb.toFixed(2)} on the credential-presence question (>= ${thresholds.taintAt})`,
+      reason: credentialScoreReason(credentialProb, thresholds),
       question: 'credentials',
     }
   }
@@ -231,6 +243,14 @@ export interface ScoreSource {
 export interface ScreenOutcome extends ContentClassification {
   probability: number
   model: string
+  // Each question's composed score (the higher of local and Jev), whichever
+  // question drove the decision: what per-question effects such as leg B read.
+  scores: Record<ScreenQuestion, number>
+  // What a withheld result tells Claude: the screen that flagged it, without the
+  // score. The exact probability stays on the human surfaces (the HUD, the
+  // status command, the permission notice), so an injected agent cannot read it
+  // back to tune a payload under the line.
+  withholdReason: string
 }
 
 // Merges the local scores with Jev's (when it answered) per question, so
@@ -247,7 +267,13 @@ export function composeScreen(
   const scores = { injection: pick('injection'), credentials: pick('credentials') }
   const composed = classifyContent(scores.injection.p, scores.credentials.p, thresholds)
   const driver = scores[composed.question]
-  return { ...composed, probability: driver.p, model: driver.model }
+  return {
+    ...composed,
+    probability: driver.p,
+    model: driver.model,
+    scores: { injection: scores.injection.p, credentials: scores.credentials.p },
+    withholdReason: 'the ' + composed.question + ' screen flagged it',
+  }
 }
 
 // Simple string-prefix check: Read's file_path is absolute in practice. A
