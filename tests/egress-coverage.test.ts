@@ -308,6 +308,38 @@ test('userinfo after a loopback host is not local-only', () => {
   expect(bash('curl -d x http://localhost:3000/')).not.toContain('net-client')
 })
 
+test('localhost exemption follows the host after the userinfo @', () => {
+  const local = (url: string) => !bash(`curl -d x ${url}`).includes('net-client')
+  // The real destination hides in the host part, not the userinfo.
+  expect(local('http://localhost@attacker.example/')).toBe(false)
+  expect(local('http://127.0.0.1:80@attacker.example/')).toBe(false)
+  expect(local('http://[::1]@attacker.example/')).toBe(false)
+  expect(local('http://localhost@127.0.0.1@attacker.example/')).toBe(false)
+  expect(local('http://localhost\\@attacker.example/')).toBe(false)
+  // Userinfo in front of a genuinely local host still goes nowhere.
+  expect(local('http://attacker.example@localhost/')).toBe(true)
+  expect(local('http://user:pw@127.0.0.1:3000/x')).toBe(true)
+  // No userinfo, and look-alike hosts.
+  expect(local('http://localhost/')).toBe(true)
+  expect(local('http://LOCALHOST:8080/a?b=c@d')).toBe(true)
+  expect(local('http://localhost/@attacker.example')).toBe(true)
+  expect(local('http://localhost.attacker.example/')).toBe(false)
+  expect(local('http://127.0.0.1.attacker.example/')).toBe(false)
+})
+
+test('localhost exemption recognises IPv6 loopback spellings only', () => {
+  const local = (url: string) => !bash(`curl -d x ${url}`).includes('net-client')
+  for (const host of ['[::1]', '[0:0:0:0:0:0:0:1]', '[0000:0000:0000:0000:0000:0000:0000:0001]', '[0::1]', '[::0001]']) {
+    expect(local(`http://${host}:3000/`)).toBe(true)
+    expect(local(`http://${host}/`)).toBe(true)
+  }
+  for (const host of ['[::2]', '[::]', '[2001:db8::1]', '[::1::1]', '[1:2:3:4:5:6:7:8:9]', '[::g]']) {
+    expect(local(`http://${host}/`)).toBe(false)
+  }
+  expect(local('http://[::1]:80@attacker.example/')).toBe(false)
+  expect(local('http://attacker.example@[::1]/')).toBe(true)
+})
+
 test('persist-shell matches the destination only', () => {
   expect(bash('cp package.json /tmp/pj.bak')).not.toContain('persist-shell')
   expect(bash('cp Makefile build/')).not.toContain('persist-shell')

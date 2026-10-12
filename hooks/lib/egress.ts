@@ -246,13 +246,45 @@ const PUBLISH_BINS: ReadonlySet<string> = new Set([
 ])
 const CLOUD_BINS: ReadonlySet<string> = new Set(['aws', 'gsutil', 'gcloud', 'az'])
 
+// True for an IPv6 loopback literal (`[::1]` and its zero-compressed or
+// zero-padded spellings); anything that does not parse as exactly ::1 is not.
+function isIpv6Loopback(bracketed: string): boolean {
+  const m = /^\[([0-9a-f:]+)\]$/i.exec(bracketed)
+  if (!m) return false
+  const halves = m[1].split('::')
+  if (halves.length > 2) return false
+  const groups = (h: string): string[] => (h === '' ? [] : h.split(':'))
+  const head = groups(halves[0])
+  const tail = halves.length === 2 ? groups(halves[1]) : []
+  const all = [...head, ...tail]
+  if (all.length > 8 || all.some((g) => !/^[0-9a-f]{1,4}$/i.test(g))) return false
+  if (halves.length === 1 ? all.length !== 8 : all.length > 7) return false
+  const full = halves.length === 1 ? all : [...head, ...Array<string>(8 - all.length).fill('0'), ...tail]
+  return full.every((g, i) => parseInt(g, 16) === (i === 7 ? 1 : 0))
+}
+
+// Only the host the connection actually goes to may earn the exemption: the
+// part of the authority after the userinfo `@`. `localhost:80@evil.example`
+// therefore targets evil.example, while `anything@localhost` targets localhost.
+// Ambiguous authorities (several `@`, a backslash) are never local.
+function isLocalUrl(url: string): boolean {
+  const m = /^https?:\/\/([^/?#]*)/i.exec(url)
+  if (!m || m[1].includes('\\')) return false
+  const parts = m[1].split('@')
+  if (parts.length > 2) return false
+  const hostPort = parts[parts.length - 1]
+  const host = /^(\[[^\]]*\]|[^:]*)(?::\d+)?$/.exec(hostPort)?.[1]
+  if (host === undefined) return false
+  return /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(host) || isIpv6Loopback(host)
+}
+
 // A curl/wget whose every http(s) URL points at the loopback host is a local
 // dev request, not egress -- exempted unless it also carries a substitution
 // (§5, the localhost trade-off note). No URL at all is not exempt.
 function targetsOnlyLocalhost(raw: string): boolean {
   const urls = raw.match(/https?:\/\/[^\s"'`)]+/gi)
   if (!urls || urls.length === 0) return false
-  return urls.every((u) => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?=[/\s"'?]|$)/i.test(u))
+  return urls.every(isLocalUrl)
 }
 
 function netClientMatch(call: EgressCall): boolean {
