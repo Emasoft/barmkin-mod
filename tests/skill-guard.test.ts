@@ -87,9 +87,9 @@ test('a description that is wholly instruction-like is replaced by a withheld ma
 })
 
 test('the withheld notes carry the reason and never the replaced text', () => {
-  const body = skillBodyWithheldText('content scored 0.90 on the injection question')
+  const body = skillBodyWithheldText('the injection screen flagged it')
   expect(body).toContain('withheld this skill')
-  expect(body).toContain('content scored 0.90')
+  expect(body).toContain('the injection screen flagged it')
   const listing = skillListingWithheldText('the listing screen failed (throw)')
   expect(listing).toContain('withheld the skill listing')
 })
