@@ -34,14 +34,16 @@ interface Entry {
   readonly state: { readonly status: string; readonly error?: string }
 }
 
+const RUNNING = new Set(['active', 'running', 'loaded'])
+
 // Matches by plugin id. A plugin that failed before its module was read has no
 // id, so a failed entry is also matched by a source path or package name that
 // contains the guard id.
 export function classify(entries: readonly Entry[], guardId: string): State {
   const mine = entries.filter((entry) => entry.id === guardId || (entry.state.status === 'failed' && (entry.source.path ?? entry.source.target ?? '').includes(guardId)))
   if (mine.length === 0) return { kind: 'absent' }
-  const failed = mine.find((entry) => entry.state.status === 'failed')
-  if (failed) return { kind: 'failed', error: failed.state.error?.split('\n').find((line) => line.trim())?.trim().slice(0, 200) }
+  const bad = mine.find((entry) => !RUNNING.has(entry.state.status))
+  if (bad) return { kind: 'failed', error: bad.state.error?.split('\n').find((line) => line.trim())?.trim().slice(0, 200) ?? 'plugin status: ' + bad.state.status }
   return { kind: 'listed' }
 }
 

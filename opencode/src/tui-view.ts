@@ -24,6 +24,8 @@ export interface Inventory {
   error?: string
 }
 
+const RUNNING = new Set(['active', 'running', 'loaded'])
+
 // An inventory entry for the guard is matched by plugin id. A plugin that
 // failed before its module was read has no id, so a failed entry is also
 // matched by its source path or package name containing the guard id.
@@ -36,8 +38,8 @@ export function guardInventory(plugins: readonly PluginEntryLike[] | undefined, 
     return where.includes(guardId)
   })
   if (matches.length === 0) return { presence: 'absent' }
-  const failed = matches.find((plugin) => plugin.state.status === 'failed')
-  if (failed) return { presence: 'failed', error: firstLine(failed.state.error) }
+  const failed = matches.find((plugin) => !RUNNING.has(plugin.state.status))
+  if (failed) return { presence: 'failed', error: firstLine(failed.state.error) ?? 'plugin status: ' + failed.state.status }
   return { presence: 'active' }
 }
 
