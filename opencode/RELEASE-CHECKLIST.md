@@ -9,6 +9,21 @@ OpenCode 2.x ships about seven stable releases a week, and `experimental.policie
 - [ ] The tested range starts at 2.0.27. Do not claim anything earlier, and do not claim a version that has not passed section 2.
 - [ ] If the version is new, diff the plugin-relevant paths against the last tested tag (plugin runtime, supervisor, hook runner, config discovery and precedence, permission, tool, shell, policy). A non-additive change is a stop: re-scout before continuing.
 
+### Build the bundle
+
+The guard ships as one file with no runtime dependency: everything under `hooks/lib` and `opencode/src` is inlined, and nothing is imported from `@opencode/*`. Build it from the repository root with the pinned Bun:
+
+```
+bun build opencode/server.ts --target bun \
+  --define BARMKIN_CORE_SHA="\"$(git rev-parse --short HEAD)\"" \
+  --outfile barmkin-opencode/server.js
+```
+
+- [ ] The command succeeds and writes `barmkin-opencode/server.js` (about 115 KB). `BARMKIN_CORE_SHA` is the `core <git-sha>` in the posture line; without the `--define` the line says `core unbuilt`.
+- [ ] `grep -cE '^import |require\(' barmkin-opencode/server.js` prints `0`: no external import survived.
+- [ ] To ship the TUI half, put `opencode/tui.tsx`, `opencode/src/status-rpc.ts` and `opencode/src/tui-view.ts` in the same directory (the last two under `src/`). OpenCode loads `tui.tsx` only from beside the server entry, and the server half works without it.
+- [ ] No bypass flag, debug switch or environment override exists in the bundle: the only plugin options are `mcp_server_allowlist`, `jev_*` and `debug` (logging only).
+
 ## 2. Per-release subset re-run
 
 Run against the real binary with an isolated HOME and every XDG directory inside a scratch directory, `--standalone`, a scripted model, and `< /dev/null` for headless runs. Never use the shared background service. The check ids are from the 2.x re-scout.
@@ -40,8 +55,8 @@ Guard-specific:
 
 Suites:
 
-- [ ] `cd opencode && BARMKIN_CONTRACT_STRICT=1 bun test` on the pinned Bun: every contract module present, nothing skipped.
-- [ ] The shared library suites (`bun test` on the 16 library files, and `claude plugin test` for the Claude side) are green.
+- [ ] `cd opencode && BARMKIN_CONTRACT_STRICT=1 bun test --tsconfig-override ./tsconfig.json` on the pinned Bun: every contract module present, nothing skipped (the T-SEAT suite in `tests/`, which `bunfig.toml` points at).
+- [ ] `cd opencode && bun test --tsconfig-override ./tsconfig.json ./tests ../tests` is green: the T-SEAT suite plus the shared library suites. `claude plugin test` from the repository root is green too and discovers nothing under `opencode/`.
 
 ## 3. Posture-line snapshot gate
 

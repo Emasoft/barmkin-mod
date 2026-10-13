@@ -12,7 +12,7 @@ export const CONTRACT_PATHS = {
   resultShapes: 'src/result-shapes.ts',
   egressNormaliser: 'src/egress-normaliser.ts',
   mcpGuard: 'src/mcp-guard.ts',
-  serverTui: 'server.tui.tsx',
+  serverTui: 'tui.tsx',
 } as const
 
 export type ContractModule = keyof typeof CONTRACT_PATHS
