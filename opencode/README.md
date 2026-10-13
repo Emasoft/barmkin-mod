@@ -68,7 +68,7 @@ The optional `opencode-canary/` package is a separate plugin that names the guar
 
 ## Tests
 
-The T-SEAT contract suite lives in `tests/` and runs on Bun 1.4.2:
+The T-SEAT contract suite lives in `tests/` as `*.spec.ts` (so `claude plugin test` does not pick up these Bun-only files) and runs on Bun 1.4.2:
 
 ```
 cd opencode && bun test

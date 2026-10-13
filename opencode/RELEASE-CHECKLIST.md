@@ -51,7 +51,7 @@ Suites:
 - [ ] Any change to the fixed wording needs captain approval. Only `<git-sha>` and `<per-seat gaps>` may vary between releases.
 - [ ] Repeat in each seat the release claims (inline-config seat with and without the allowlist and project config off) and confirm the `not covered:` list names the gaps for that seat.
 - [ ] Remove the seat and start again: confirm **no** posture line appears.
-- [ ] `opencode/README.md` still carries the section 2.2 wording verbatim (`tests/docs-contract.test.ts` checks this).
+- [ ] `opencode/README.md` still carries the section 2.2 wording verbatim (`tests/docs-contract.spec.ts` checks this).
 
 ## 4. Sign-off
 

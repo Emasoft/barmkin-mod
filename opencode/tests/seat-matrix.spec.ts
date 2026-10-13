@@ -2,7 +2,7 @@
 //
 // Runs against the host model in support/seat-host.ts (re-scout V1, V10-V17, V38, V41), with a
 // stand-in plugin that has the guard's id, so it does not wait for server.ts. The guard's own
-// behaviour once loaded is in seat-guard.test.ts.
+// behaviour once loaded is in seat-guard.spec.ts.
 
 import { describe, expect, test } from 'bun:test'
 import { probePlugin, SEATS, SeatHost, type HostInput, type Policy } from './support/seat-host'
