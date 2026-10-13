@@ -51,7 +51,7 @@ A guard seated any other way (global `plugins/` directory, global `opencode.json
 ## Install
 
 1. Install OpenCode at an exact tested version (see [Tested range](#tested-range)). Do not run on an untested release.
-2. Build or unpack the plugin as a directory named `barmkin-opencode` containing `server.js` (a configured plugin must be a directory; a bare file path in `plugins[]` is rejected). Keep it outside OpenCode's auto-discovered `plugins/` directories so the seat, not discovery, loads it.
+2. Build the plugin (see [Build the bundle](RELEASE-CHECKLIST.md#build-the-bundle)) into a directory named `barmkin-opencode` containing `server.js` (a configured plugin must be a directory; a bare file path in `plugins[]` is rejected). Keep it outside OpenCode's auto-discovered `plugins/` directories so the seat, not discovery, loads it.
 3. Seat it: set `OPENCODE_CONFIG_CONTENT='{"plugins":["/absolute/path/to/barmkin-opencode"]}'` for the service or the launcher.
 4. Add the allowlist to the user-global `opencode.json` (deny `plugin:*`, allow `plugin:barmkin-opencode`).
 5. Set `OPENCODE_DISABLE_PROJECT_CONFIG=1` in the same environment.
@@ -71,9 +71,9 @@ The optional `opencode-canary/` package is a separate plugin that names the guar
 The T-SEAT contract suite lives in `tests/` as `*.spec.ts` (so `claude plugin test` does not pick up these Bun-only files) and runs on Bun 1.4.2:
 
 ```
-cd opencode && bun test
+cd opencode && bun test --tsconfig-override ./tsconfig.json
 ```
 
 It checks, against a model of the 2.x host built from the verified behaviour: removal by `-id` and `-x.*`, the plugin allowlist, the inline-config seat, `permission.evaluate`-throw finality, tool-rename detection and shell-layer rewrite detection. It also checks that this README keeps its non-equivalence wording. It does **not** run the OpenCode binary; the per-release checklist does.
 
-Tests for modules that have not landed yet are skipped. Set `BARMKIN_CONTRACT_STRICT=1` (integration and release runs) to make a missing module fail instead.
+A contract test is skipped when its module is missing. Set `BARMKIN_CONTRACT_STRICT=1` (integration and release runs) to make a missing module fail instead. The shared library suites run with the same command plus `./tests ../tests`; see [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md).

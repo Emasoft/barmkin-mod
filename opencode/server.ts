@@ -34,41 +34,13 @@
 // documented human-origin limitation in the contract.
 //
 // ---------------------------------------------------------------------------
-// W3 call surface. The three modules below are owned by W3 and are imported by
-// the file names the CONTRACT gives them. This file fixes the call shape; W3
-// slots in under it. Each call site is marked `TODO(W3)`.
-//
-//   ./src/egress-normaliser
-//     normalizeEgressCall(toolId, input, info?) -> EgressCall | null
-//       Re-keys a 2.x tool id + arguments (shell/read/write/edit/patch/webfetch/
-//       websearch/subagent/skill, an MCP tool as `mcp__<server>__<tool>`) to the
-//       Claude-side names hooks/lib/egress.ts matches on. null = not an egress
-//       tool. `info.mcpServer` is the MCP server namespace when the tool is one.
-//     normalizePermissionCall(action, resources, metadata?) -> EgressCall | EgressCall[] | null
-//       The same for a `permission.evaluate` event: `action` is the permission
-//       action name, `resources` the final command(s) / URL / path(s) (V5-V9).
-//   ./src/result-shapes
-//     readAfterText(event) -> string
-//       The text the model will read from a `tool.execute.after` event.
-//     mapAfterStrings(event, rewrite) -> void
-//       Rewrites, in place, every model-visible string of an after event
-//       (result.output / result.content text / result.metadata, or
-//       error.message), never uris or media. Completed and error alike (V21).
-//     readModelText(surface, event) -> string
-//     mapModelStrings(surface, event, rewrite) -> void
-//       The same for the model-boundary hooks. surface is 'prompt' | 'context' |
-//       'compaction' | 'generate' | 'title': the prompt text; system parts,
-//       messages and tool descriptions; the title request's messages.
-//   ./src/tool-result
-//     withholdAfterResult(event, message) -> void
-//       Replaces what the model reads from an after event with `message`,
-//       keeping the event valid for its status (completed or error).
-//     appendAfterContext(event, text) -> void
-//       Adds `text` to what the model reads from an after event.
-//
-// W4 (opencode/src/mcp-guard.ts) registers the MCP description neutraliser via
-// `ctx.tool.transform`; it is not wired from here. TODO(W4): call it from setup
-// once its registration function exists, and flip MCP_DESCRIPTION_GUARD below.
+// Composition. The host-neutral pieces live beside this file:
+//   ./src/egress-normaliser  re-keys 2.x tool ids and arguments to the names
+//                            hooks/lib/egress.ts matches on, and gates them
+//   ./src/result-shapes      the 2.x wire shapes and the string traversals
+//   ./src/tool-result        read, redact, withhold and annotate an after event
+//   ./src/mcp-guard          the MCP description neutraliser (installMcpGuard)
+//   ./src/status-rpc         the one channel to the TUI half (tui.tsx)
 // ---------------------------------------------------------------------------
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
 import {
@@ -96,16 +68,7 @@ import {
   type ScreenOutcome,
   type TaintClearPosture,
 } from '../hooks/lib/taint'
-import {
-  EGRESS_CLASSES,
-  classifyEgress,
-  decideEgress,
-  touchesSecretPath,
-  type EgressCall,
-  type EgressClass,
-  type EgressVerdict,
-  type TrifectaLegs,
-} from '../hooks/lib/egress'
+import { touchesSecretPath, type EgressCall, type EgressVerdict, type TrifectaLegs } from '../hooks/lib/egress'
 import { planWindows, unclassifiedChars, mergeWindowScores, mergeWindowAnswers } from '../hooks/lib/classifier-windows'
 import { PRODUCTION_QUESTIONS, SCREEN_QUESTION_IDS, SHADOW_ARMS, shadowQuestions, type ShadowArm } from '../hooks/lib/jev-questions'
 import {
@@ -115,12 +78,12 @@ import {
   type NoulQuestion,
   type SystemOneParseResult,
 } from '../hooks/lib/system-one-client'
-import { isAllowedServer } from '../hooks/lib/mcp-guard'
 import { skillBodyWithheldText, neutralizeSkillListing } from '../hooks/lib/skill-guard'
-// TODO(W3): these three files land with W3's PR; their export names are the call surface above.
-import { normalizeEgressCall, normalizePermissionCall } from './src/egress-normaliser'
-import { readAfterText, mapAfterStrings, readModelText, mapModelStrings } from './src/result-shapes'
-import { withholdAfterResult, appendAfterContext } from './src/tool-result'
+import { gateEgress, normaliseEgressCalls, normaliseEvaluate, type NormaliseOptions } from './src/egress-normaliser'
+import { installMcpGuard, isServerAllowed, mcpNamespace, parseAllowlist, type McpGuardHandle, type McpGuardHost } from './src/mcp-guard'
+import { mapPromptStrings, mapRequestStrings, mapToolDescriptions, mapCompactionResult, promptText, type SessionCompactionShape, type SessionContextShape, type SessionPromptShape, type ToolAfterEvent as WireAfterEvent } from './src/result-shapes'
+import { statusRpc, type StatusReport } from './src/status-rpc'
+import { afterEventText, noticeAfterEvent, redactAfterEvent, withholdAfterEvent } from './src/tool-result'
 
 // ---------------------------------------------------------------------------
 // Identity and the shipping text.
@@ -135,9 +98,18 @@ export const PLUGIN_VERSION = '0.1.0'
 declare const BARMKIN_CORE_SHA: string | undefined
 const CORE_SHA = typeof BARMKIN_CORE_SHA === 'string' && BARMKIN_CORE_SHA !== '' ? BARMKIN_CORE_SHA : 'unbuilt'
 
-// Whether W4's MCP description neutraliser is registered from this build. When it
-// is not, the posture line says MCP tool descriptions are not covered.
-const MCP_DESCRIPTION_GUARD = false
+// Whether the MCP description neutraliser (src/mcp-guard) installed every hook it
+// needs. Set in setup from the guard's own report; when it is false (the guard
+// failed to install or an earlier step errored), the posture line says MCP tool
+// descriptions are not covered.
+let mcpDescriptionGuard = false
+let mcpGuard: McpGuardHandle | null = null
+
+function refreshMcpDescriptionGuard(): void {
+  const status = mcpGuard?.status()
+  mcpDescriptionGuard = status !== undefined && mcpGuard!.healthy() && status.installed.toolTransform && status.installed.contextHook
+  if (status !== undefined && !mcpDescriptionGuard) debugLog('barmkin-opencode: the MCP guard is not fully installed: ' + status.errors.join('; '))
+}
 
 const TAINT_POSTURE: TaintClearPosture = 'sticky'
 
@@ -163,14 +135,7 @@ interface ToolBeforeEvent {
   input: unknown
 }
 
-type ToolAfterEvent = {
-  readonly tool: string
-  readonly sessionID: string
-  readonly agent: string
-  readonly messageID: string
-  readonly id: string
-  readonly input: unknown
-} & ({ readonly status: 'completed'; result: unknown } | { readonly status: 'error'; error: unknown })
+type ToolAfterEvent = WireAfterEvent & { readonly agent: string; readonly messageID: string; readonly id: string }
 
 interface PermissionEvaluation {
   readonly sessionID: string
@@ -334,6 +299,10 @@ const redactionCounters: Record<string, number> = {}
 let pluginOptions: Readonly<Record<string, any>> = {}
 let projectDirectory = ''
 
+// The status RPC's change channel (src/status-rpc `changed`). Best effort: the TUI
+// also polls, so a failed emit only delays its refresh.
+let emitChanged: (reason: string) => void = () => {}
+
 function debugLog(message: string): void {
   if (pluginOptions.debug === true) console.error(message)
 }
@@ -362,6 +331,7 @@ async function rootOf(ctx: PluginContext, sessionID: string): Promise<string> {
     current = parent
   }
   rootCache.set(sessionID, current)
+  if (mcpTaintReason !== null) markTainted(current, mcpTaintReason)
   return current
 }
 
@@ -370,8 +340,10 @@ async function rootOf(ctx: PluginContext, sessionID: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function markTainted(root: string, reason: string): void {
+  const wasTainted = read(tainted, root)
   update(tainted, root, () => true)
   update(taintReason, root, (current) => current ?? reason)
+  if (!wasTainted) emitChanged('taint')
 }
 
 // Taints the session and records that only a person's /barmkin-mod-clear-taint
@@ -400,7 +372,8 @@ function readLegs(root: string): TrifectaLegs {
     untrustedReason: read(taintReason, root),
     sensitive: read(sensitiveAccess, root),
     sensitiveReason: read(sensitiveReason, root),
-    ackRequired: read(taintAckReason, root) !== null,
+    // Always: the posture is sticky (V27), so a message never clears and the denial must say so.
+    ackRequired: true,
   }
 }
 
@@ -419,6 +392,7 @@ function clearTaintLegs(root: string): HeldTaint {
   update(taintAckReason, root, () => null)
   update(sensitiveAccess, root, () => false)
   update(sensitiveReason, root, () => null)
+  emitChanged('taint cleared')
   return held
 }
 
@@ -430,7 +404,26 @@ function reserveSkillLoad(root: string, loadReason: string): { standingReason: s
   if (read(tainted, root)) return { standingReason: read(taintReason, root), ackReason: read(taintAckReason, root) }
   update(tainted, root, () => true)
   update(taintReason, root, () => loadReason)
+  emitChanged('taint')
   return null
+}
+
+// Hidden text the MCP guard stripped from a tool description, schema or server
+// instructions. Those are read before any session exists, so a stripped count past
+// the threshold taints every session seen so far and, through rootOf, every one
+// opened later. Reported once per distinct (where, count): the same unchanged
+// catalog does not re-taint a session a person has since cleared.
+let mcpTaintReason: string | null = null
+const mcpHiddenSeen = new Set<string>()
+
+function onMcpHiddenText(hiddenCount: number, where: string): void {
+  if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
+  const key = where + ':' + hiddenCount
+  if (mcpHiddenSeen.has(key)) return
+  mcpHiddenSeen.add(key)
+  const reason = 'stripped ' + hiddenCount + ' invisible character(s) from ' + where
+  mcpTaintReason ??= reason
+  for (const root of new Set(rootCache.values())) markTainted(root, reason)
 }
 
 // Shared by every scrubInvisible call site: taints the session when a scrub
@@ -449,27 +442,22 @@ function redactInEitherView(text: string, counters: Record<string, number> = red
 }
 
 // ---------------------------------------------------------------------------
-// The egress gate. Code Mode `execute` has an unmediated `fetch` (V25), so it is
-// classed as an outward-effect tool and denied while the session is tainted
-// (re-scout section 8, item 4). The class is added to the lib's, not a change to it.
+// The egress gate. The normaliser re-keys 2.x calls to the names egress.ts
+// classifies on and adds the Code Mode class (`execute` has an unmediated
+// `fetch`, V25, so it is denied while the session is tainted: re-scout section 8,
+// item 4). The class is added to the lib's, not a change to it.
 // ---------------------------------------------------------------------------
 
-const CODE_MODE_CLASS: EgressClass = {
-  id: 'codemode-execute',
-  description: 'running Code Mode code (it can fetch from the network with no permission step)',
-  tools: ['execute'],
-  onUntrusted: 'deny',
-}
-const GATE_CLASSES: readonly EgressClass[] = [...EGRESS_CLASSES, CODE_MODE_CLASS]
-
-// Notes any sensitive access in the call, classifies it, and decides over the
+// Notes any sensitive access in the calls, classifies them, and decides over the
 // trifecta legs. A deny or warn is recorded for the status surface. Never answers allow.
-function egressGate(root: string, call: EgressCall): EgressVerdict {
-  if (touchesSecretPath(call)) markSensitive(root, 'a ' + call.tool + ' call named a credential path')
-  const verdict = decideEgress(classifyEgress(call, GATE_CLASSES), readLegs(root))
+function egressGate(root: string, calls: readonly EgressCall[]): EgressVerdict {
+  for (const call of calls) {
+    if (touchesSecretPath(call)) markSensitive(root, 'a ' + call.tool + ' call named a credential path')
+  }
+  const { verdict } = gateEgress(calls, readLegs(root))
   if (verdict.kind !== 'pass') {
     update(lastEgress, root, () => ({
-      tool: call.tool,
+      tool: calls[0]?.tool ?? '',
       classIds: verdict.classIds,
       decision: verdict.kind,
       rule: verdict.kind === 'deny' ? verdict.rule : 'untrusted',
@@ -526,20 +514,17 @@ async function toolMeta(ctx: PluginContext, toolId: string): Promise<ToolMeta> {
   return { mcpServer: null, screened: false }
 }
 
-function parseAllowlist(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
+// How the normaliser tells an MCP tool from a built-in: the registry namespace the
+// tool list reports, else (for an id the list does not know) anything that is not
+// one of OpenCode's own. Mirrors toolMeta without refreshing the list.
+function normaliseOptions(): NormaliseOptions {
+  return {
+    mcpServers: [...new Set([...toolNamespaces.values()].filter((v): v is string => typeof v === 'string' && v !== ''))],
+    isMcpTool: (id) => {
+      const namespace = toolNamespaces.get(id)
+      return namespace ? true : namespace === undefined && !BUILTIN_TOOL_IDS.has(id)
+    },
   }
-  return []
-}
-
-// The registry namespace an MCP server name becomes (core tool/mcp.ts).
-function mcpNamespace(server: string): string {
-  return server.replace(/[^a-zA-Z0-9_-]/g, '_')
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +762,13 @@ function track<T>(map: Map<string, T>, key: string, value: T): void {
   }
 }
 
+// Withholds an after event's result, or throws when the event cannot be edited
+// (a frozen error message): a result the guard could not replace must not be
+// delivered, and a throw after the tool ran reaches the model as an error (V22).
+function withhold(e: ToolAfterEvent, message: string): void {
+  if (!withholdAfterEvent(e, message)) throw new Error('barmkin-opencode: the result could not be withheld')
+}
+
 // A refusal this file decided on, as opposed to a bug in the guard itself: it is
 // rethrown as is, where anything else becomes a fail-closed refusal.
 class GuardDeny extends Error {}
@@ -792,8 +784,7 @@ async function toolBefore(ctx: PluginContext, e: ToolBeforeEvent): Promise<void>
 
     // MCP server allowlist.
     if (meta.mcpServer !== null) {
-      const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist).map(mcpNamespace)
-      if (!isAllowedServer(meta.mcpServer, allowlist)) {
+      if (!isServerAllowed(meta.mcpServer, parseAllowlist(pluginOptions.mcp_server_allowlist))) {
         throw new GuardDeny('barmkin-opencode: MCP server "' + meta.mcpServer + '" is not on the allowlist')
       }
     }
@@ -825,25 +816,14 @@ async function toolBefore(ctx: PluginContext, e: ToolBeforeEvent): Promise<void>
 
     // Egress gate over the call as the model proposed it. The final command, URL
     // or path is rechecked at permission time.
-    const call = egressCallFor(e.tool, e.input, meta)
-    if (call !== null) {
-      const verdict = egressGate(root, call)
-      if (verdict.kind === 'deny') throw new GuardDeny(verdict.message)
-      if (verdict.kind === 'warn') track(pendingWarnings, e.id, verdict.message)
-    }
+    const verdict = egressGate(root, normaliseEgressCalls(e.tool, e.input, normaliseOptions()))
+    if (verdict.kind === 'deny') throw new GuardDeny(verdict.message)
+    if (verdict.kind === 'warn') track(pendingWarnings, e.id, verdict.message)
     if (SHELL_TOOL_IDS.has(e.tool)) track(shellInFlight, e.id, root)
   } catch (error) {
     if (error instanceof GuardDeny) throw error
     throw guardFailure('egress guard', error)
   }
-}
-
-// The egress call for a tool, in the names hooks/lib/egress.ts matches on.
-function egressCallFor(toolId: string, input: unknown, meta: ToolMeta): EgressCall | null {
-  // Code Mode `execute` is its own class above; the normaliser has no key for it.
-  if (CODE_MODE_TOOL_IDS.has(toolId)) return { tool: 'execute', input: asRecord(input) }
-  // TODO(W3): the re-keyed 2.x tool ids and argument names.
-  return normalizeEgressCall(toolId, input, { mcpServer: meta.mcpServer })
 }
 
 // ---------------------------------------------------------------------------
@@ -854,16 +834,11 @@ function egressCallFor(toolId: string, input: unknown, meta: ToolMeta): EgressCa
 async function permissionEvaluate(ctx: PluginContext, e: PermissionEvaluation): Promise<void> {
   try {
     const root = await rootOf(ctx, e.sessionID)
-    // TODO(W3): the permission-time form of the same normaliser.
-    const normalised = normalizePermissionCall(e.action, e.resources, e.metadata)
-    const calls: EgressCall[] = normalised === null ? [] : Array.isArray(normalised) ? normalised : [normalised]
-    // The action name is also checked on its own: Code Mode `execute` carries no
-    // resources the normaliser can read.
-    if (CODE_MODE_TOOL_IDS.has(e.action)) calls.push({ tool: 'execute', input: {} })
-    for (const call of calls) {
-      const verdict = egressGate(root, call)
-      if (verdict.kind === 'deny') throw new GuardDeny(verdict.message)
-    }
+    // The final action and resources after every other plugin's rewrite. An
+    // action with no resources the normaliser can read (Code Mode `execute`, an
+    // MCP tool) classifies on its name alone.
+    const verdict = egressGate(root, normaliseEvaluate(e.action, e.resources, normaliseOptions()))
+    if (verdict.kind === 'deny') throw new GuardDeny(verdict.message)
   } catch (error) {
     if (error instanceof GuardDeny) throw error
     throw new Error(
@@ -882,12 +857,10 @@ async function permissionEvaluate(ctx: PluginContext, e: PermissionEvaluation): 
 function shellCreateBefore(e: ShellCreateBefore): void {
   const roots = new Set(shellInFlight.values())
   if (roots.size === 0) return
-  // TODO(W3): the same normaliser key as a `shell` tool call.
-  const call = normalizeEgressCall('shell', { command: e.command }, { mcpServer: null })
-  if (call === null) return
+  const calls = normaliseEgressCalls('shell', { command: e.command })
   try {
     for (const root of roots) {
-      const verdict = egressGate(root, call)
+      const verdict = egressGate(root, calls)
       if (verdict.kind === 'deny') throw new GuardDeny(verdict.message)
     }
   } catch (error) {
@@ -913,13 +886,13 @@ async function toolAfter(ctx: PluginContext, e: ToolAfterEvent): Promise<void> {
 
     const withheld = await screenAfterResult(root, e, meta)
     if (withheld) return
-    if (warning !== undefined && e.status === 'completed') appendAfterContext(e, warning)
+    if (warning !== undefined && e.status === 'completed') noticeAfterEvent(e, warning)
 
     // Over the budget: a result nothing can scan whole is withheld, with the
     // limits of an untrusted surface where a screen covers the tool.
     const size = measureResult(payload, meta.screened)
     if (size !== 'within') {
-      withholdAfterResult(e, 'barmkin-opencode: this tool result is larger than the redaction scan budget, so it was withheld. ' + PAGING_ADVICE)
+      withhold(e, 'barmkin-opencode: this tool result is larger than the redaction scan budget, so it was withheld. ' + PAGING_ADVICE)
       return
     }
 
@@ -933,8 +906,7 @@ async function toolAfter(ctx: PluginContext, e: ToolAfterEvent): Promise<void> {
       if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       return redacted
     }
-    // TODO(W3): rewrites every model-visible string of the after event.
-    mapAfterStrings(e, redactValue)
+    redactAfterEvent(e, redactValue)
 
     // A redaction hit means a credential-shaped value just passed through this
     // session: leg B of the trifecta.
@@ -942,7 +914,7 @@ async function toolAfter(ctx: PluginContext, e: ToolAfterEvent): Promise<void> {
     taintForScrub(root, hiddenCount, 'tool:' + (meta.mcpServer ? 'mcp' : e.tool))
   } catch (error) {
     try {
-      withholdAfterResult(e, 'barmkin-opencode: the result guard failed (' + (error instanceof Error ? error.message : String(error)) + '); the result was withheld to avoid leaking an unredacted secret or untrusted content')
+      withhold(e, 'barmkin-opencode: the result guard failed (' + (error instanceof Error ? error.message : String(error)) + '); the result was withheld to avoid leaking an unredacted secret or untrusted content')
     } catch {
       throw new Error('barmkin-opencode: the result guard failed, so the result was not delivered')
     }
@@ -967,30 +939,29 @@ function screenLabelFor(toolId: string, meta: ToolMeta, input: unknown): string 
 // withheld, in which case nothing else is done to it.
 async function screenAfterResult(root: string, e: ToolAfterEvent, meta: ToolMeta): Promise<boolean> {
   if (e.tool === 'skill') {
-    // TODO(W3): the text of a completed result.
-    const text = readAfterText(e)
+    const text = afterEventText(e)
     if (!text) return false
     const id = typeof asRecord(e.input).id === 'string' ? (asRecord(e.input).id as string) : 'unnamed'
     taintForScrub(root, scrubInvisible(text).hiddenCount, 'a skill body')
     const verdict = await screenContent(root, text, 'skill:' + id, e.id)
     if (verdict.decision === 'deny') {
-      withholdAfterResult(e, skillBodyWithheldText(verdict.withholdReason))
+      withhold(e, skillBodyWithheldText(verdict.withholdReason))
       return true
     }
-    if (verdict.tainted) appendAfterContext(e, UNTRUSTED_CONTENT_WARNING)
+    if (verdict.tainted) noticeAfterEvent(e, UNTRUSTED_CONTENT_WARNING)
     return false
   }
 
   const label = screenLabelFor(e.tool, meta, e.input)
   if (label === null) return false
-  const text = readAfterText(e)
+  const text = afterEventText(e)
   if (!text) return false
   const verdict = await screenContent(root, text, label, e.id)
   if (verdict.decision === 'deny') {
-    withholdAfterResult(e, withheldMessage('this result', verdict.withholdReason))
+    withhold(e, withheldMessage('this result', verdict.withholdReason))
     return true
   }
-  if (verdict.tainted) appendAfterContext(e, UNTRUSTED_CONTENT_WARNING)
+  if (verdict.tainted) noticeAfterEvent(e, UNTRUSTED_CONTENT_WARNING)
   return false
 }
 
@@ -1000,15 +971,13 @@ async function screenAfterResult(root: string, e: ToolAfterEvent, meta: ToolMeta
 // ---------------------------------------------------------------------------
 
 function sessionPrompt(e: SessionPromptEvent): void {
-  // TODO(W3): the prompt text.
-  const text = readModelText('prompt', e)
+  const text = promptText(e as SessionPromptShape)
   if (exceedsScreenedLimit(text)) {
     throw new Error('barmkin-opencode: your message is longer than the 16 KiB scan limit, so it was withheld')
   }
   let redactedCount = 0
   let withheld = false
-  // TODO(W3): rewrites the prompt text in place.
-  mapModelStrings('prompt', e, (value) => {
+  mapPromptStrings(e as SessionPromptShape, (value) => {
     const result = redactInEitherView(value, {})
     redactedCount += result.redactedCount
     if (result.text === WITHHELD_TEXT) withheld = true
@@ -1060,12 +1029,17 @@ async function modelBoundary(ctx: PluginContext, surface: 'context' | 'compactio
   } catch (error) {
     throw new Error('barmkin-opencode: the ' + surface + ' request was not sent (' + (error instanceof Error ? error.message : String(error)) + ')')
   }
-  // TODO(W3): system parts, messages and tool descriptions (or the title request's messages).
-  mapModelStrings(surface, e, boundaryRewriter(root))
+  const rewrite = boundaryRewriter(root)
+  mapRequestStrings(e as SessionContextShape, rewrite)
+  if (surface === 'title') return
+  // Tool descriptions are the model's too; a result an earlier plugin set on a
+  // compaction enters history without passing the context hook.
+  mapToolDescriptions((e as SessionContextShape).tools, rewrite, false)
+  if (surface === 'compaction') mapCompactionResult(e as SessionCompactionShape, rewrite)
 }
 
 // ---------------------------------------------------------------------------
-// Commands, status and the posture line.
+// Commands, the status channel and the posture line.
 // ---------------------------------------------------------------------------
 
 export interface Seat {
@@ -1131,7 +1105,7 @@ function notCovered(s: Seat): string[] {
     'taint cleared only by a person running /barmkin-mod-clear-taint, never by a message',
     'any session where this guard is not loaded',
   ]
-  if (!MCP_DESCRIPTION_GUARD) gaps.push('MCP tool descriptions')
+  if (!mcpDescriptionGuard) gaps.push('MCP tool descriptions')
   if (s.others.length > 0) gaps.push('plugins loaded beside this guard')
   return gaps
 }
@@ -1166,34 +1140,6 @@ export function buildPostureLines(s: Seat, coreSha: string = CORE_SHA): string[]
   return lines
 }
 
-function statusLines(root: string): string[] {
-  const isTainted = read(tainted, root)
-  const reason = read(taintReason, root)
-  const ackReason = read(taintAckReason, root)
-  const isSensitive = read(sensitiveAccess, root)
-  const sensitiveWhy = read(sensitiveReason, root)
-  const egress = read(lastEgress, root)
-  const verdict = read(lastVerdict, root)
-  const shadow = read(lastShadow, root)
-  return [
-    ...postureLines,
-    'barmkin-opencode status',
-    'taint clear posture: ' + TAINT_POSTURE + ' (this host cannot tell a person\'s message from a synthetic one)',
-    'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' : 'off'),
-    ...(ackReason !== null ? ['acknowledgement required: ' + ackReason + '; run /barmkin-mod-clear-taint (a message does not clear it)'] : []),
-    'sensitive access: ' + (isSensitive ? 'ON (' + (sensitiveWhy ?? 'unspecified') + ')' : 'off'),
-    'egress: ' +
-      (isTainted && isSensitive ? 'all classes denied (Rule of Two)' : isTainted ? 'gated per class (taint)' : 'open') +
-      (egress ? '; last ' + egress.decision + ': ' + egress.classIds.join(', ') + ' via ' + egress.tool + ' (' + egress.rule + ')' : ''),
-    'classifier breaker: ' + (read(breakerOpenUntil, root) > Date.now() ? 'open (degraded, using heuristics)' : 'closed'),
-    verdict
-      ? 'last verdict: ' + verdict.decision + ' p=' + verdict.probability.toFixed(2) + ' model=' + verdict.model + ' question=' + verdict.question
-      : 'last verdict: none yet',
-    'shadow screen (four questions, annotation only, never enforced): ' + (read(shadowBreakerOpenUntil, root) > Date.now() ? 'breaker open, not asking' : 'breaker closed'),
-    ...(shadow ? shadow.arms.map((record) => '  ' + shadow.label + ' ' + describeShadowArm(record)) : ['  no shadow answers yet']),
-  ]
-}
-
 async function say(ctx: PluginContext, sessionID: string, text: string): Promise<void> {
   try {
     await ctx.session.synthetic({ sessionID, text, description: PLUGIN_ID, resume: false })
@@ -1202,16 +1148,30 @@ async function say(ctx: PluginContext, sessionID: string, text: string): Promise
   }
 }
 
-// The server-to-TUI channel (re-scout V34-V36): the TUI module calls `status`.
-const RPC_DEFINITION = {
-  id: PLUGIN_ID,
-  methods: {
-    status: {
-      input: { type: 'object', properties: { sessionID: { type: 'string' } } },
-      output: { type: 'object', properties: { posture: { type: 'array', items: { type: 'string' } }, lines: { type: 'array', items: { type: 'string' } }, tainted: { type: 'boolean' } } },
+// The server-to-TUI channel (re-scout V34-V36; src/status-rpc): the TUI module
+// calls `status` with no session, so taint is reported across every session this
+// process has seen: tainted when any root is.
+function statusReport(): StatusReport {
+  const roots = [...new Set(rootCache.values())]
+  const taintedRoot = roots.find((root) => read(tainted, root))
+  const sensitiveRoot = roots.find((root) => read(sensitiveAccess, root))
+  const reason = taintedRoot === undefined ? null : read(taintReason, taintedRoot)
+  return {
+    version: PLUGIN_VERSION,
+    postureLine: postureLines[0] ?? '',
+    conditionalLines: postureLines.slice(1),
+    seat: {
+      kind: seat.name,
+      label: seat.name === 'unverified' ? 'unverified' : seat.name === 'inline-config' ? 'inline config' : 'file or package',
+      repoCanUnload: !seat.inlineSeated && !seat.projectConfigDisabled,
     },
-  },
-  events: {},
+    taint: {
+      tainted: taintedRoot !== undefined,
+      sensitive: sensitiveRoot !== undefined,
+      ...(reason !== null ? { reason } : {}),
+    },
+    ...(mcpGuard !== null ? { mcp: mcpGuard.status() } : {}),
+  }
 }
 
 async function installOptional(ctx: PluginContext): Promise<void> {
@@ -1219,14 +1179,6 @@ async function installOptional(ctx: PluginContext): Promise<void> {
     // Never throws inside a transform (V19).
     await ctx.command.transform((editor) => {
       try {
-        editor.add({
-          name: 'barmkin-mod-status',
-          description: 'Show barmkin-opencode taint, breaker, and last classifier verdict',
-          execute: async (input) => {
-            const root = await rootOf(ctx, input.sessionID)
-            await say(ctx, input.sessionID, statusLines(root).join('\n'))
-          },
-        })
         editor.add({
           name: 'barmkin-mod-clear-taint',
           description: 'Clear the barmkin-opencode taint and sensitive-access flags and re-enable egress',
@@ -1244,12 +1196,15 @@ async function installOptional(ctx: PluginContext): Promise<void> {
     debugLog('barmkin-opencode: command registration failed: ' + String(error))
   }
   try {
-    await ctx.rpc.register(RPC_DEFINITION, {
-      status: async (input: { sessionID?: string }) => {
-        const root = typeof input?.sessionID === 'string' ? await rootOf(ctx, input.sessionID) : PLUGIN_SCOPE
-        return { posture: postureLines, lines: statusLines(root), tainted: read(tainted, root) }
-      },
-    })
+    const registration = (await ctx.rpc.register(statusRpc, { status: async () => statusReport() })) as {
+      events?: { emit?: (name: 'changed', payload: { reason: string }) => Promise<void> }
+    } | null
+    const emit = registration?.events?.emit
+    if (typeof emit === 'function') {
+      emitChanged = (reason) => {
+        emit.call(registration!.events, 'changed', { reason }).catch((error: unknown) => debugLog('barmkin-opencode: status event failed: ' + String(error)))
+      }
+    }
   } catch (error) {
     debugLog('barmkin-opencode: rpc registration failed: ' + String(error))
   }
@@ -1260,8 +1215,10 @@ async function installOptional(ctx: PluginContext): Promise<void> {
 function startPostureProbe(ctx: PluginContext): void {
   void probeSeat(ctx).then((probed) => {
     seat = probed
+    refreshMcpDescriptionGuard()
     postureLines = buildPostureLines(seat)
     for (const line of postureLines) console.error(line)
+    emitChanged('seat')
   })
 }
 
@@ -1287,6 +1244,17 @@ export default {
     await ctx.session.hook('title', (e) => modelBoundary(ctx, 'title', e))
     await ctx.session.hook('compaction', (e) => modelBoundary(ctx, 'compaction', e))
     await ctx.session.hook('generate', (e) => modelBoundary(ctx, 'generate', e))
+
+    // The MCP description neutraliser (src/mcp-guard). It registers its own
+    // transforms and a second, allowlist-only before/evaluate/context hook, and it
+    // never throws: a failed install shows in healthy() and leaves the posture line
+    // naming MCP tool descriptions as not covered.
+    mcpGuard = await installMcpGuard(ctx as unknown as McpGuardHost, {
+      allowlist: ctx.options?.mcp_server_allowlist,
+      onHiddenText: onMcpHiddenText,
+    })
+    refreshMcpDescriptionGuard()
+    postureLines = buildPostureLines(seat)
 
     await installOptional(ctx)
     startPostureProbe(ctx)

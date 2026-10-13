@@ -216,7 +216,7 @@ export class SeatHost {
       resource = shellEvent.command
     }
 
-    const evaluation = { sessionID: call.sessionID, tool, resources: [resource], effect: 'allow' as string, message: undefined as string | undefined }
+    const evaluation = { sessionID: call.sessionID, action: tool, tool, resources: [resource], effect: 'allow' as string, message: undefined as string | undefined }
     try {
       for (const h of this.hooksNamed('permission.evaluate')) await h.fn(evaluation)
     } catch (err) {
@@ -234,8 +234,7 @@ export class SeatHost {
       tool,
       input: event.input,
       status: 'completed' as const,
-      output: text,
-      content: [{ type: 'text', text }],
+      result: { output: text, content: [{ type: 'text', text }] },
     }
     try {
       for (const h of this.hooksNamed('tool.execute.after')) await h.fn(after)

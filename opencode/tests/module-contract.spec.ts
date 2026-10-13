@@ -14,6 +14,10 @@ describe('contract modules', () => {
 
     run(`${path} exists and imports without side effects that throw`, async () => {
       expect(modulePresent(name)).toBe(true)
+      if (name === 'serverTui') {
+        // OpenCode compiles tui.tsx with its own Solid JSX runtime, so plain Bun cannot import it.
+        return
+      }
       const mod = await loadModule(name)
       expect(Object.keys(mod).length).toBeGreaterThan(0)
     })

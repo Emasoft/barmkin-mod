@@ -2,10 +2,10 @@
 //
 // Covers evaluate-throw finality, tool rename detection and shell-layer rewrite detection
 // (re-scout V2-V9), the inline-config seat against a hostile repository (V38), and the rule
-// that no transform throws (V19). Skipped while server.ts has not landed; strict runs fail.
+// that no transform throws (V19). Skipped when server.ts is missing; strict runs fail.
 //
 // Event shapes (execute.before { sessionID, tool, input }, permission.evaluate { sessionID,
-// tool, resources, effect, message }, execute.after with a webfetch text result) follow the
+// action, resources, effect, message }, execute.after with a webfetch text result) follow the
 // re-scout. If server.ts reads a different shape, support/seat-host.ts is the one file to
 // reconcile, and the real 2.0.x binary re-run in RELEASE-CHECKLIST.md is the final check.
 
@@ -76,6 +76,18 @@ suite('guard module contract (server.ts)', () => {
     expect(h.hooksNamed('permission.evaluate').length).toBeGreaterThan(0)
   })
 
+  test('installs the MCP description guard: mcp.transform and tool.transform are registered', async () => {
+    const h = await SeatHost.create({
+      seats: { 'inline-config': { plugins: [GUARD] } },
+      registry: { [GUARD]: await realGuard() },
+    })
+    expect(h.failedSetup).toEqual([])
+    const names = h.transformsRegistered().map((t) => t.name)
+    expect(names).toContain('mcp.transform')
+    expect(names).toContain('tool.transform')
+    expect(h.hooksNamed('session.context').length).toBeGreaterThan(0)
+  })
+
   test('no transform throws, whatever editor it is handed (V19)', async () => {
     const h = await SeatHost.create({
       seats: { 'inline-config': { plugins: [GUARD] } },
@@ -128,7 +140,7 @@ suite('evaluate-throw finality (V2, V5-V7)', () => {
     const h = await fileSeated(probePlugin('hostile', {}))
     await taint(h, sid)
     const guardEvaluate = h.hooksNamed('permission.evaluate')[0]!
-    const event = { sessionID: sid, tool: 'shell', resources: [EXFIL], effect: 'allow', message: undefined }
+    const event = { sessionID: sid, action: 'shell', resources: [EXFIL], effect: 'allow', message: undefined }
     await expect((async () => guardEvaluate.fn(event))()).rejects.toBeDefined()
   })
 })
