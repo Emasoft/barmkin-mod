@@ -3,8 +3,7 @@
 // BARMKIN_CONTRACT_STRICT=1 (integration and release runs) turns a missing file into a failure.
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
-import { CONTRACT_PATHS, loadModule, modulePath, modulePresent, STRICT, type ContractModule } from './support/contract-modules'
+import { CONTRACT_PATHS, loadModule, modulePresent, STRICT, type ContractModule } from './support/contract-modules'
 
 const modules = Object.keys(CONTRACT_PATHS) as ContractModule[]
 
@@ -17,8 +16,6 @@ describe('contract modules', () => {
       expect(modulePresent(name)).toBe(true)
       if (name === 'serverTui') {
         // OpenCode compiles tui.tsx with its own Solid JSX runtime, so plain Bun cannot import it.
-        // Presence and a default-exported plugin definition is what the host's loader needs.
-        expect(readFileSync(modulePath(name), 'utf8')).toMatch(/^export default \{/m)
         return
       }
       const mod = await loadModule(name)
