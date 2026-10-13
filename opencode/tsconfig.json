@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "paths": {
+      "claude-code/testing": ["./tests/bun-testing-shim.ts"]
+    }
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "../hooks/lib/**/*.ts", "../tests/**/*.ts"]
+}
