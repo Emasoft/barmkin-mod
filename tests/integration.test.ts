@@ -2029,3 +2029,15 @@ test('shadow: the shadow requests wait no longer than the production ones: a slo
   expect(status).toContain('no window answered')
   expect(status).toContain('classifier breaker: closed')
 })
+
+test('a worst-case result at the 1 MiB total is redacted by the hook well inside three seconds', async ($, on) => {
+  const CAP = 256 * 1024
+  const shape = (unit: string) => unit.repeat(Math.ceil(CAP / unit.length)).slice(0, CAP)
+  const strings = ['SECRET=', 'eyJ-', '-----BEGIN PRIVATE KEY-----\n', 'Bearer abcdefghijklmnopqrst', "X_TOKEN='aaaa1"].map(shape)
+  on('tool.call', () => ({ result: { a: strings[0], b: strings[1], c: strings[2], d: strings[3] }, text: strings[4] }))
+  const started = performance.now()
+  const out = await $.tool.call({ tool: 'Bash', command: 'cat blob' })
+  const elapsed = performance.now() - started
+  expect(out.deny).toBeUndefined()
+  expect(elapsed < 3000).toBe(true)
+})

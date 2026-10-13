@@ -1,0 +1,9 @@
+# Bun 1.4.2 is the runtime embedded in OpenCode 2.0.27, the lowest supported.
+# Run from this directory so the 'claude-code/testing' alias in tsconfig.json
+# applies to ../tests:
+#   cd opencode && bun test --tsconfig-override ./tsconfig.json
+[test]
+root = "../tests"
+# integration.test.ts drives hooks/register.ts through the Claude Code test kit
+# ($, on); it runs under `claude plugin test`, not here.
+pathIgnorePatterns = ["**/integration.test.ts"]
