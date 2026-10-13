@@ -29,9 +29,13 @@ import {
 function outputText(output: unknown, depth = 0): string {
   if (typeof output === 'string') return output
   if (output && typeof output === 'object' && !Array.isArray(output) && depth < 4) {
-    const inner = (output as { output?: unknown }).output
-    if (typeof inner === 'string') return inner
-    if (inner && typeof inner === 'object') return outputText(inner, depth + 1)
+    const rec = output as Record<string, unknown>
+    const inner = rec.output
+    if (typeof inner === 'string' || (inner && typeof inner === 'object')) {
+      const head = typeof inner === 'string' ? inner : outputText(inner, depth + 1)
+      const siblings = Object.keys(rec).filter((k) => k !== 'output' && typeof rec[k] === 'string').map((k) => rec[k] as string)
+      return [head, ...siblings].join('\n')
+    }
   }
   return extractResultText({ result: output })
 }

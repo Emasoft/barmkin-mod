@@ -263,6 +263,32 @@ export function mapErrorStrings(error: ToolError, fn: StringMap): boolean {
   return t.changed()
 }
 
+const ENVELOPE_KEYS: ReadonlySet<string> = new Set(['type', 'role', 'mime'])
+const PAYLOAD_KEYS: ReadonlySet<string> = new Set(['input', 'output', 'value', 'metadata'])
+
+// Rewrites a message or system tree: `type`/`role`/`mime` strings on the
+// content-part envelope are kept, while tool-call `input` and tool-result
+// `result` (bar its own `type`) are payload and walked with no key skipping.
+function mapEnvelope(value: unknown, fn: StringMap): unknown {
+  if (typeof value === 'string') return fn(value)
+  if (value === null || typeof value !== 'object' || isOpaque(value as object)) return value
+  if (Array.isArray(value)) return value.map((item) => mapEnvelope(item, fn))
+  const rec = value as Record<string, unknown>
+  const out = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>
+  for (const k of Object.keys(rec)) {
+    const v = rec[k]
+    if (typeof v === 'string' && ENVELOPE_KEYS.has(k)) out[k] = v
+    else if (PAYLOAD_KEYS.has(k)) out[k] = mapStrings(v, fn, NO_SKIP_KEYS)
+    else if (k === 'result' && v && typeof v === 'object' && !Array.isArray(v)) {
+      const r = v as Record<string, unknown>
+      const copy = Object.create(Object.getPrototypeOf(v)) as Record<string, unknown>
+      for (const rk of Object.keys(r)) copy[rk] = rk === 'type' && typeof r[rk] === 'string' ? r[rk] : mapStrings(r[rk], fn, NO_SKIP_KEYS)
+      out[k] = copy
+    } else out[k] = mapEnvelope(v, fn)
+  }
+  return out
+}
+
 // session.context / title / compaction / generate (V28): assigns rewritten
 // copies of `system` and `messages`. Message ids, roles and part `type`s are
 // skipped. Assigning a deep copy is the verified mechanism (V28 used a JSON
@@ -274,7 +300,7 @@ export function mapRequestStrings(event: SessionRequestShape, fn: StringMap): bo
     const current = event[field]
     if (!Array.isArray(current)) continue
     const t = tracked(fn)
-    const next = mapStrings(current, t.fn)
+    const next = mapEnvelope(current, t.fn)
     if (t.changed()) {
       ;(event as unknown as Record<string, unknown>)[field] = next
       changed = true
@@ -408,6 +434,7 @@ function partTexts(content: unknown): string[] {
       const p = part as { type?: unknown; text?: unknown; result?: { value?: unknown }; input?: unknown }
       if (typeof p.text === 'string') out.push(p.text)
       else if (p.type === 'tool-result' && p.result) out.push(...jsonTexts(p.result.value))
+      else if (p.type === 'tool-call') out.push(...jsonTexts(p.input))
     }
   }
   return out
