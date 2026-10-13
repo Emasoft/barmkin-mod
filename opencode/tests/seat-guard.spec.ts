@@ -2,7 +2,7 @@
 //
 // Covers evaluate-throw finality, tool rename detection and shell-layer rewrite detection
 // (re-scout V2-V9), the inline-config seat against a hostile repository (V38), and the rule
-// that no transform throws (V19). Skipped while server.ts has not landed; strict runs fail.
+// that no transform throws (V19). Skipped when server.ts is missing; strict runs fail.
 //
 // Event shapes (execute.before { sessionID, tool, input }, permission.evaluate { sessionID,
 // action, resources, effect, message }, execute.after with a webfetch text result) follow the
