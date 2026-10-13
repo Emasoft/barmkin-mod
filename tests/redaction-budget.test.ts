@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
 import { redactInEitherView } from '../hooks/lib/redaction'
 import { scrubInvisible } from '../hooks/lib/scrub'
