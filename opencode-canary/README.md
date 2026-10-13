@@ -17,7 +17,7 @@ The guard's own TUI half cannot report any of this, because OpenCode loads a plu
 | Plugin list says | Footer chip | Banner above the prompt | Toast |
 |---|---|---|---|
 | no `barmkin-opencode` entry | `BARMKIN GUARD ABSENT` (red) | `BARMKIN GUARD ABSENT: this session is UNGUARDED…` | yes |
-| `barmkin-opencode` failed to load or was disabled | `BARMKIN GUARD FAILED` (red) | `BARMKIN GUARD FAILED: this session is UNGUARDED.` plus the first line of the error | yes |
+| `barmkin-opencode` failed to load, or reports any status other than active | `BARMKIN GUARD FAILED` (red) | `BARMKIN GUARD FAILED: this session is UNGUARDED.` plus the first line of the error | yes |
 | `barmkin-opencode` listed as active | `barmkin guard listed (canary cannot verify it works)` (muted) | none | none |
 
 "Listed" is the best the canary can say. It reads the plugin inventory, which says the guard is loaded; it cannot say the guard works. For the guard's own posture, use `/barmkin-mod-status` from the guard's TUI half.
