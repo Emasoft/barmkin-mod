@@ -24,7 +24,9 @@ export interface Inventory {
   error?: string
 }
 
-const RUNNING = new Set(['active', 'running', 'loaded'])
+// PluginState in the 2.0.27 client types (packages/client/src/promise/generated/types.ts)
+// is { status: 'active' } | { status: 'failed'; error: string; ref?: string }, so
+// 'active' is the only live status and anything else is treated as not live.
 
 // An inventory entry for the guard is matched by plugin id. A plugin that
 // failed before its module was read has no id, so a failed entry is also
@@ -33,12 +35,12 @@ export function guardInventory(plugins: readonly PluginEntryLike[] | undefined, 
   if (!plugins) return { presence: 'absent' }
   const matches = plugins.filter((plugin) => {
     if (plugin.id === guardId) return true
-    if (plugin.state.status !== 'failed') return false
+    if (plugin.state.status === 'active') return false
     const where = plugin.source.path ?? plugin.source.target ?? ''
     return where.includes(guardId)
   })
   if (matches.length === 0) return { presence: 'absent' }
-  const failed = matches.find((plugin) => !RUNNING.has(plugin.state.status))
+  const failed = matches.find((plugin) => plugin.state.status !== 'active')
   if (failed) return { presence: 'failed', error: firstLine(failed.state.error) ?? 'plugin status: ' + failed.state.status }
   return { presence: 'active' }
 }

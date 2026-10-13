@@ -34,15 +34,17 @@ interface Entry {
   readonly state: { readonly status: string; readonly error?: string }
 }
 
-const RUNNING = new Set(['active', 'running', 'loaded'])
+// PluginState in the 2.0.27 client types (packages/client/src/promise/generated/types.ts)
+// is { status: 'active' } | { status: 'failed'; error: string; ref?: string }, so
+// 'active' is the only live status and anything else is treated as not live.
 
 // Matches by plugin id. A plugin that failed before its module was read has no
 // id, so a failed entry is also matched by a source path or package name that
 // contains the guard id.
 export function classify(entries: readonly Entry[], guardId: string): State {
-  const mine = entries.filter((entry) => entry.id === guardId || (entry.state.status === 'failed' && (entry.source.path ?? entry.source.target ?? '').includes(guardId)))
+  const mine = entries.filter((entry) => entry.id === guardId || (entry.state.status !== 'active' && (entry.source.path ?? entry.source.target ?? '').includes(guardId)))
   if (mine.length === 0) return { kind: 'absent' }
-  const bad = mine.find((entry) => !RUNNING.has(entry.state.status))
+  const bad = mine.find((entry) => entry.state.status !== 'active')
   if (bad) return { kind: 'failed', error: bad.state.error?.split('\n').find((line) => line.trim())?.trim().slice(0, 200) ?? 'plugin status: ' + bad.state.status }
   return { kind: 'listed' }
 }
