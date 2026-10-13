@@ -34,11 +34,15 @@ flags, redirection, a remote spec — against the raw command.
 - Cloud object-store uploads (`cloud`): `aws s3 cp|mv|sync`, `aws s3api put-object`, `gsutil`/`gcloud storage cp|rsync`, `az storage … upload`. Read ops stay clear. *Warns on A alone.*
 - Inline interpreter network calls (`interpreter-net`): `python`/`node`/`deno`/`ruby`/`perl`/`php` run with `-c`/`-e`/`--eval` where the inline script makes a network call (`urlopen`, `fetch(`, `requests.get`, a `socket(`/`.connect(` call, `http.request`, `/dev/tcp`, …); a bare URL literal or `socket.gethostname()` is not enough. *Denies on A alone.*
 - Shell writes to persistence surfaces (`persist-shell`): a redirection, `tee`/`cp`/`mv`/`install`/`ln`/`rsync`/`dd`, or a `sed -i` whose destination is a persistence path (the last argument for `cp`/`mv`/`install`/`ln`/`rsync`, `of=` for `dd`, so reading one as a source does not warn). *Warns on A alone.*
+- Destructive commands (`destructive`): `rm -rf` (or `--recursive --force`) on `/`, the running user's `~`/`$HOME`, a system root (`/etc`, `/usr`, `/var`, `/boot`, `/dev`, `/opt`, `/root`, … including paths beneath them) or a secret path (`~/.ssh`, `~/.aws`, `.env`, …); `chmod`/`chown`/`shred`/in-place `sed -i` on a secret path; a redirect into a secret path or `authorized_keys`; `dd of=` a block device; `mkfs`/`wipefs` on `/dev/…`. *Warns on a clean session, denies on A alone.*
+- Git history rewrites (`history-rewrite`): `git reset --hard`, `git push --force`/`-f`/`--force-with-lease` to `main`/`master`, `git clean -fd`, `git branch -D` (the safe `-d` is not matched), `git update-ref -d`. *Warns on a clean session, denies on A alone.*
 - Web fetches (`web-fetch`) and web searches (`web-search`), since the URL and the query are each a channel. *Fetch denies, search warns, on A alone.*
 - Monitor WebSockets (`monitor-ws`): a `Monitor` call opening an outbound `ws`. *Denies on A alone.*
 - MCP write-class tools (`mcp-write`): names containing verbs such as `create`, `send`, `post`, `update`, `delete`, `save`, `set`, `insert` or `upsert`. The ambiguous `run`/`execute`/`request` are not treated as writes.
 - Skill loads (`skill-load`).
-- File-tool writes to persistence surfaces (`persistence`): `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, CI workflows, git hooks, shell rc files, `~/.ssh`, `~/.local/bin`, `.vscode/{tasks,settings,launch}.json`, `.devcontainer/`, `package.json`, `Makefile`, `.envrc`, `.pre-commit-config.yaml` and `.config/fish/`. `package.json` and `Makefile` are edited constantly, so these only warn (never deny) on A alone.
+- File-tool writes to persistence surfaces (`persistence`): `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, CI workflows, git hooks, shell rc files, `~/.ssh`, `~/.local/bin`, `.vscode/{tasks,settings,launch}.json`, `.devcontainer/`, `package.json`, `Makefile`, `GNUmakefile`, `.envrc`, `.pre-commit-config.yaml` and `.config/fish/`. `package.json`, `Makefile` and `GNUmakefile` are edited constantly, so these only warn (never deny) on A alone. The same paths written from a shell (`persist-shell`) follow the same rule.
+
+The destructive classes are the one place a clean session gets an advisory: a match is allowed with a warning when nothing untrusted has been handled, and denied as soon as the session is tainted (leg A). They never deny unconditionally, so an injection that the detector misses is not blocked by them; the Bash sandbox is the floor for that case. Deep system paths (`rm -rf /opt/app/cache`) are matched on purpose, `/home/<other>/…` is not, and `rm -rf node_modules`, `dist` and `build` are untouched.
 
 The shell classes are a naive tokenizer, not a shell parser: quoting tricks (`c''url`, a `|` inside a quoted string, base64-wrapped binaries) evade them. That is inherent — the Bash sandbox's egress allowlist is the enforcement floor beneath them (see Limits).
 
@@ -123,7 +127,7 @@ Guarding hooks fail closed: if one errors, the action is denied or the content w
 
 ## Limits
 
-- The shell denylist can be evaded. Enable the Bash sandbox so its egress allowlist sits underneath it.
+- The shell denylist and the destructive classes can be evaded (obfuscated or variable-indirected commands). Enable the Bash sandbox so its egress allowlist sits underneath it.
 - Size limits. Every redaction rule runs in time linear in the text, so a tool result is scanned whole up to 256 KiB per string and 1 MiB per result. Past those limits:
   - A string over 256 KiB in a result that no injection screen covers (Bash, Grep, Glob, a Read inside the working directory) shows a scanned prefix of about 12 KiB, cut at a line or delimiter that no secret match crosses, followed by a note with the shown and total character counts and how to page: `Read` with `offset` and `limit`, or a narrower command. The hidden part is never shown and never matched, and invisible text anywhere in the string still counts toward the taint threshold. If no safe cut exists, the result is withheld.
   - A result whose strings together pass 1 MiB, and a Read image past about 190 KiB, are withheld, since a prefix of either is not useful.
