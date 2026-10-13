@@ -20,8 +20,8 @@
 | **MCP tool-poisoning guard** | Strips instruction-like sentences from MCP tool descriptions and enforces an optional server allowlist. |
 | **Skill guards** | Denies skill inline shell (`` !`command` ``) while mediation applies, and screens skill bodies and the skill listing. |
 | **Agent-to-agent firewall** | Screens inbound peer messages, blocks outbound messages that contain secrets, and refuses to spawn subagents while the session is tainted. |
-| **Jev System One classifier** | An optional remote classifier with an explanation surface (`/barmkin-mod-status`, the HUD and the permission notice). It can only raise suspicion, never lower it. |
-| **Shadow four-question screen** | With Jev configured, each window is also asked about prompt injection, data exfiltration, secrets and destructive commands. Annotation only, to calibrate future thresholds. |
+| **Jev System One classifier** | An optional remote classifier with an explanation surface (`/barmkin-mod-status`, the HUD and the permission notice). It can only raise suspicion, never lower it. Production screening enforces three questions: prompt injection, data exfiltration and contains-secrets, in the revised wording. |
+| **Shadow screen** | Contrast instrumentation only: the captain's wording of all four questions, plus the destructive-command question in the revised wording. Annotation only. Destructive never taints. |
 | **Invisible-text scrub** | Strips ANSI escapes, bidi overrides, zero-width characters and the Unicode Tags block from tool results, descriptions and messages. |
 
 ## Quick start
@@ -153,12 +153,23 @@ With Jev configured, content that spans more than one window and has a part the 
 
 A withheld result tells Claude which screen flagged it and nothing more. The exact probability stays in the status command, the HUD and the permission notice, so a payload cannot be tuned against it.
 
+### Production screening
+
+With Jev configured, each window is put to three enforced questions in one request: prompt injection, data exfiltration and contains-secrets. They share one instruction in the revised wording, which names screener-directed text, label laundering and the scope rules. These are the real verdict.
+
+- Each question taints the session at 0.5, a question's highest score over the windows decides, and Jev can only raise a score.
+- Injection alone is withheld, from 0.85.
+- Exfiltration taints only. It never withholds a result and never sets sensitive access.
+- Contains-secrets taints and also sets sensitive access (leg B).
+
+Destructive commands are not screened by Jev. They stay with the taint-gated [destructive tier](#destructive-and-history-rewrite-tier).
+
 ### Shadow screen
 
-Each window is also put to four questions under one shared instruction: prompt injection, data exfiltration, contains-secrets and destructive commands. They run in two wordings (the captain's text with the edits that asking each question alone forces, and a revised wording that names screener-directed text and the scope rules) so the live pilot can compare them. Answers are merged over the windows by highest score and shown in `/barmkin-mod-status` and the permission notice.
+A shadow screen runs next to production for contrast only: the captain's wording of all four questions (the captain's text with the edits that asking each question alone forces), and the destructive-command question in the revised wording. Answers are merged over the windows by highest score and shown in `/barmkin-mod-status` and the permission notice, marked as shadow.
 
 > [!NOTE]
-> The shadow screen is annotation only. It never taints the session, withholds a result, sets sensitive access or gates a call, and the destructive-command question never taints. It has its own breaker, so a shadow failure cannot degrade the real screen or turn the HUD amber. Enforcement on the new questions stays off until shadow data and the pilot say what the thresholds should be. The questions are frozen constants (`hooks/lib/jev-questions.ts`) with a SHA-256 pinned in the tests; no setting, event or screened content reaches them.
+> The shadow screen is annotation only. It never taints the session, withholds a result, sets sensitive access or gates a call. The destructive-command question never taints anywhere: classifier-scored destructive detection was found not to be feasible, so that question is instrumentation and destructive stays annotation-only. The shadow screen has its own breaker, so a shadow failure cannot degrade the real screen or turn the HUD amber. The questions are frozen constants (`hooks/lib/jev-questions.ts`) with a SHA-256 pinned in the tests; no setting, event or screened content reaches them.
 
 ## Limits
 
@@ -180,7 +191,7 @@ Each window is also put to four questions under one shared instruction: prompt i
 
 **Classifier traffic**
 
-- With Jev configured, the endpoint receives up to about 18,000 characters of redacted untrusted content per screen, in up to five requests, plus one more request per window for each shadow wording.
+- With Jev configured, the endpoint receives up to about 18,000 characters of redacted untrusted content per screen, in up to five requests, plus two more requests per window for the shadow screen.
 
 **Maintenance**
 
