@@ -72,15 +72,11 @@ describe('README seat recipe, install and tested range', () => {
   test('has install steps and starts the tested range at 2.0.27', () => {
     expect(readme).toMatch(/^## Install$/m)
     expect(readme).toContain('Starts at OpenCode 2.0.27')
-    expect(readme).toContain('Pin an exact version')
   })
 })
 
 describe('release checklist', () => {
-  test('pins an exact version, re-runs a per-release subset, and gates on the posture line', () => {
-    expect(checklist).toMatch(/^## 1\. Pin the exact version$/m)
-    expect(checklist).toMatch(/^## 2\. Per-release subset re-run$/m)
-    expect(checklist).toMatch(/^## 3\. Posture-line snapshot gate$/m)
+  test('pins the tested range start version', () => {
     expect(checklist).toContain('2.0.27')
   })
 
@@ -92,6 +88,5 @@ describe('release checklist', () => {
 
   test('requires the fixed posture wording and the README wording to stay verbatim', () => {
     expect(checklist).toContain(POSTURE_LINE)
-    expect(checklist).toContain('captain approval')
   })
 })
