@@ -119,11 +119,22 @@ export function mergeWindowAnswers(
   return merged
 }
 
-// The production pair's windows as one score source, so composeScreen still
-// reads "local versus Jev" and Jev can only raise a score. Null when no
-// window answered.
-export function mergeWindowScores(results: (SystemOneParseResult | null)[]): ScoreSource | null {
-  const merged = mergeWindowAnswers(results, ['injection', 'credentials'])
+// The production screen's three answers over the windows: the injection and
+// credentials scores as one score source, so composeScreen still reads "local
+// versus Jev" and Jev can only raise a score, plus the exfiltration score,
+// which has no local counterpart and is applied on top by the caller. Null
+// when no window answered.
+export interface ProductionScores extends ScoreSource {
+  exfiltration: number
+}
+
+export function mergeWindowScores(results: (SystemOneParseResult | null)[]): ProductionScores | null {
+  const merged = mergeWindowAnswers(results, ['injection', 'exfiltration', 'credentials'])
   if (merged === null) return null
-  return { model: merged.model, injection: merged.answers.injection, credentials: merged.answers.credentials }
+  return {
+    model: merged.model,
+    injection: merged.answers.injection,
+    exfiltration: merged.answers.exfiltration,
+    credentials: merged.answers.credentials,
+  }
 }

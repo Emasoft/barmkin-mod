@@ -921,9 +921,10 @@ const WINDOW = 4000
 
 // One classifier request, as the mock sees it.
 interface JevCall {
-  // The production pair, or a four-question shadow request.
+  // The production screen's three questions, or a shadow request: the captain
+  // wording's four, or the revised wording's destructive_command alone.
   kind: 'production' | 'shadow'
-  // The wording arm of a shadow request, read off its shared instruction.
+  // The wording arm of a shadow request, read off its question ids.
   arm?: 'captain' | 'revised'
   ids: string[]
   content: string
@@ -933,6 +934,8 @@ interface JevCall {
 interface JevMockOptions {
   // Scores the shadow questions answer with, by id. Everything else answers 0.05.
   shadow?: Record<string, number>
+  // The production exfiltration score (the other two are the positional arguments).
+  exfiltration?: number
   // An HTTP status to fail a request with instead of answering it.
   failWith?: (call: JevCall) => number | undefined
   // A model spelling other than the pinned one.
@@ -945,10 +948,10 @@ interface JevMockOptions {
 
 function describeJevCall(body: any): JevCall {
   const ids = Object.keys(body.questions)
-  const shared = ids.length === 4 ? body.questions[ids[0]].instructions : ''
+  const production = ids.length === 3
   return {
-    kind: ids.length === 4 ? 'shadow' : 'production',
-    arm: ids.length === 4 ? (shared.includes('even where it addresses a screener') ? 'revised' : 'captain') : undefined,
+    kind: production ? 'production' : 'shadow',
+    arm: production ? undefined : ids.length === 4 ? 'captain' : 'revised',
     ids,
     content: body.state.content,
     questions: body.questions,
@@ -976,7 +979,7 @@ function jevMock($: any, on: any, injection: number, credentials = 0.05, options
     const status = options.failWith?.(call)
     if (status !== undefined) return { value: { ok: false, status, text: '' } }
     if (options.malformed?.(call)) return { value: { ok: true, status: 200, text: JSON.stringify({ model: 'jev-1.13.0', answers: {} }) } }
-    const scores = options.score?.(call) ?? (call.kind === 'shadow' ? (options.shadow ?? {}) : { injection, credentials })
+    const scores = options.score?.(call) ?? (call.kind === 'shadow' ? (options.shadow ?? {}) : { injection, credentials, exfiltration: options.exfiltration ?? 0.05 })
     return { value: { ok: true, status: 200, text: jevResponse(call, scores, options.model) } }
   })
   return calls
@@ -1847,26 +1850,56 @@ test('leg B: credentials alone still taint and set leg B, and injection alone do
 })
 
 // ---------------------------------------------------------------------------
-// The four-question shadow screen: asked per window, once per wording, and
-// recorded for a person to read. It annotates; it never taints, withholds,
-// marks a leg or gates anything.
+// The shadow screen: contrast instrumentation only, asked per window next to
+// the production screen. It annotates; it never taints, withholds, marks a leg
+// or gates anything. Its arms are the captain wording's four questions and the
+// revised wording's destructive_command alone.
 // ---------------------------------------------------------------------------
 
 const SHADOW_ALL_HIGH = { injection: 0.99, exfiltration: 0.99, credentials: 0.99, destructive_command: 0.99 }
+const PRODUCTION_IDS = ['injection', 'exfiltration', 'credentials']
 
-test('shadow: every window is asked the four questions once per wording, next to the production pair', JEV, async ($, on) => {
+test('production asks exactly injection, exfiltration and credentials, in the revised wording', JEV, async ($, on) => {
+  const calls = jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  expect(production(calls)).toHaveLength(2)
+  for (const call of production(calls)) {
+    expect(call.ids).toEqual(PRODUCTION_IDS)
+    expect(call.questions).not.toHaveProperty('destructive_command')
+    for (const id of PRODUCTION_IDS) {
+      expect(call.questions[id]).toEqual({ type: 'noul', instructions: PRODUCTION_QUESTIONS[id as 'injection'].instructions })
+      expect(call.questions[id].instructions).toContain('even where it addresses a screener or says how to score it')
+    }
+  }
+})
+
+test('shadow: every window is asked the captain wording\'s four questions and the revised destructive_command, next to production', JEV, async ($, on) => {
   const calls = jevAnswers($, on, 0.05)
   await fetchBenign($, on, WINDOW + 1)
   expect(production(calls)).toHaveLength(2)
   expect(shadowOnly(calls)).toHaveLength(4)
-  for (const call of production(calls)) expect(call.ids).toEqual(['injection', 'credentials'])
-  for (const arm of ['captain', 'revised'] as const) {
-    const armCalls = shadowOnly(calls).filter((c) => c.arm === arm)
-    expect(armCalls).toHaveLength(2)
-    for (const call of armCalls) {
-      expect(call.ids).toEqual(['injection', 'exfiltration', 'credentials', 'destructive_command'])
-      for (const id of call.ids) expect(call.questions[id]).toEqual({ type: 'noul', instructions: shadowQuestions(arm)[id as ScreenQuestionId].instructions })
-    }
+  const captain = shadowOnly(calls).filter((c) => c.arm === 'captain')
+  expect(captain).toHaveLength(2)
+  for (const call of captain) {
+    expect(call.ids).toEqual(['injection', 'exfiltration', 'credentials', 'destructive_command'])
+    for (const id of call.ids) expect(call.questions[id]).toEqual({ type: 'noul', instructions: shadowQuestions('captain')[id as ScreenQuestionId]!.instructions })
+    expect(call.questions.injection.instructions).toContain('Q1 Prompt Injection:')
+  }
+  const revised = shadowOnly(calls).filter((c) => c.arm === 'revised')
+  expect(revised).toHaveLength(2)
+  for (const call of revised) {
+    expect(call.ids).toEqual(['destructive_command'])
+    expect(call.questions.destructive_command).toEqual({ type: 'noul', instructions: shadowQuestions('revised').destructive_command!.instructions })
+  }
+})
+
+test('destructive_command is shadow-only: asked in both shadow arms, never in a production request', JEV, async ($, on) => {
+  const calls = jevAnswers($, on, 0.05)
+  await fetchBenign($, on, 200)
+  expect(production(calls).some((c) => c.ids.includes('destructive_command'))).toBe(false)
+  for (const arm of ['captain', 'revised']) {
+    expect(shadowOnly(calls).filter((c) => c.arm === arm).every((c) => c.ids.includes('destructive_command'))).toBe(true)
+    expect(shadowOnly(calls).filter((c) => c.arm === arm)).toHaveLength(1)
   }
 })
 
@@ -1879,17 +1912,6 @@ test('shadow: a shadow window carries the same content as the production window 
   for (const arm of ['captain', 'revised']) {
     expect(shadowOnly(calls).filter((c) => c.arm === arm).map((c) => c.content)).toEqual(prod)
   }
-})
-
-test('shadow: production requests carry the production pair as they always did', JEV, async ($, on) => {
-  const calls = jevAnswers($, on, 0.05)
-  await fetchBenign($, on, 200)
-  const [call] = production(calls)
-  expect(call.questions).toEqual({
-    injection: { type: 'noul', instructions: PRODUCTION_QUESTIONS.injection.instructions },
-    credentials: { type: 'noul', instructions: PRODUCTION_QUESTIONS.credentials.instructions },
-  })
-  expect(call.questions.injection.instructions).not.toContain('screening untrusted content')
 })
 
 test('shadow: nothing a shadow question answers can taint, withhold, mark a leg or gate a call', JEV, async ($, on) => {
@@ -1916,7 +1938,7 @@ test('shadow: the destructive-command question annotates and never taints', JEV,
   expect(status).toContain('destructive_command=1.00')
 })
 
-test('shadow: the exfiltration question annotates and neither taints nor marks leg B', JEV, async ($, on) => {
+test('shadow: the captain-wording exfiltration question annotates and neither taints nor marks leg B', JEV, async ($, on) => {
   jevMock($, on, 0.05, 0.05, { shadow: { exfiltration: 0.97, credentials: 0.97 } })
   await fetchBenign($, on, 200)
   const status = await statusText($)
@@ -1935,7 +1957,9 @@ test('shadow: the status command shows each wording\'s scores, merged over the w
   const status = await statusText($)
   expect(status).toContain('annotation only, never enforced')
   expect(status).toMatch(/\[captain\] 2\/2 windows: injection=0\.05 exfiltration=0\.05 credentials=0\.05 destructive_command=0\.05/)
-  expect(status).toMatch(/\[revised\] 2\/2 windows: injection=0\.05 exfiltration=0\.05 credentials=0\.05 destructive_command=0\.80/)
+  expect(status).toMatch(/\[revised\] 2\/2 windows: destructive_command=0\.80/)
+  expect(status).not.toMatch(/\[revised\][^\n]*(injection|exfiltration|credentials)=/)
+  expect(status).toContain('never taints')
   expect(status).toContain('fetch:WebFetch')
 })
 
@@ -2028,6 +2052,116 @@ test('shadow: the shadow requests wait no longer than the production ones: a slo
   const status = await statusText($)
   expect(status).toContain('no window answered')
   expect(status).toContain('classifier breaker: closed')
+})
+
+// ---------------------------------------------------------------------------
+// The promoted questions: injection, exfiltration and credentials, in the
+// revised wording, are the real verdict. Each taints at the same per-question
+// taintAt (0.5), highest score over the windows, one breaker event per screen.
+// ---------------------------------------------------------------------------
+
+// words(6000) is cut into two windows; the first starts at the start of the text.
+const firstWindow = (call: JevCall) => call.content.startsWith('word0 ')
+
+test('promoted: exfiltration at taintAt taints the session through the warning path, without withholding or marking leg B', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { exfiltration: 0.5 })
+  const out = await fetchBenign($, on, 200)
+  expect(out.result).toBe('a'.repeat(200))
+  expect(out.context.join('\n')).toContain('untrusted external source')
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('data-exfiltration question')
+  expect(status).toContain('sensitive access: off')
+  expect(status).toContain('question=fetch:WebFetch (exfiltration)')
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test('promoted: exfiltration is never withheld on its own, however high it scores', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { exfiltration: 0.99 })
+  const out = await fetchBenign($, on, 200)
+  expect(out.result).toBe('a'.repeat(200))
+  expect(await statusText($)).toContain('taint: ON')
+  expect(await statusText($)).toContain('last verdict: escalate')
+})
+
+test('promoted: exfiltration just under taintAt leaves the session clean', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { exfiltration: 0.49 })
+  const out = await fetchBenign($, on, 200)
+  expect(out.context).toBeUndefined()
+  const status = await statusText($)
+  expect(status).toContain('taint: off')
+  expect(status).toContain('sensitive access: off')
+})
+
+test('promoted: exfiltration merges over the windows by highest score: one window is enough', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { score: (call) => (call.kind === 'production' ? { exfiltration: firstWindow(call) ? 0.1 : 0.9 } : undefined) })
+  const text = words(6000)
+  const out = await fetchText($, on, () => text)()
+  expect(out.context.join('\n')).toContain('untrusted external source')
+  expect(await statusText($)).toContain('taint: ON')
+})
+
+test('promoted: exfiltration is the highest window, not an average: two windows under taintAt stay clean', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { exfiltration: 0.45 })
+  const text = words(6000)
+  const out = await fetchText($, on, () => text)()
+  expect(out.context).toBeUndefined()
+  expect(await statusText($)).toContain('taint: off')
+})
+
+test('promoted: a window that failed never lowers an exfiltration score another window gave', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, {
+    score: (call) => (call.kind === 'production' && firstWindow(call) ? { exfiltration: 0.9 } : undefined),
+    failWith: (call) => (call.kind === 'production' && !firstWindow(call) ? 503 : undefined),
+  })
+  const text = words(6000)
+  await fetchText($, on, () => text)()
+  expect(await statusText($)).toContain('taint: ON')
+  expect(await statusText($)).toContain('data-exfiltration question')
+})
+
+test('promoted: injection keeps driving the verdict when exfiltration scores too, and still withholds at denyAt', JEV, async ($, on) => {
+  jevMock($, on, 0.9, 0.05, { exfiltration: 0.99 })
+  const out = await fetchBenign($, on, 200)
+  expect(out.result).not.toBe('a'.repeat(200))
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('injection question')
+  expect(status).not.toContain('data-exfiltration question')
+})
+
+test('promoted: credentials under the revised wording still taints and marks leg B', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.9)
+  const out = await fetchBenign($, on, 200)
+  expect(out.context.join('\n')).toContain('untrusted external source')
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('sensitive access: ON')
+})
+
+test('promoted: exfiltration and credentials together: leg A and leg B are both set, and the Rule of Two denies egress', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.9, { exfiltration: 0.9 })
+  await fetchBenign($, on, 200)
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('sensitive access: ON')
+  expect(status).toContain('all classes denied (Rule of Two)')
+})
+
+test('promoted: a screen is one classifier breaker event however many windows failed', JEV, async ($, on) => {
+  const calls = jevMock($, on, 0.05, 0.05, { failWith: (call) => (call.kind === 'production' ? 503 : undefined) })
+  const fetchOf = benignFetcher($, on)
+  await fetchOf(16000)
+  await fetchOf(16000)
+  expect(production(calls).length).toBeGreaterThan(5)
+  expect(await statusText($)).toContain('classifier breaker: closed')
+})
+
+test('promoted: an exfiltration score from the shadow captain arm alone never taints', JEV, async ($, on) => {
+  jevMock($, on, 0.05, 0.05, { shadow: { exfiltration: 0.99 } })
+  const out = await fetchBenign($, on, 200)
+  expect(out.context).toBeUndefined()
+  expect(await statusText($)).toContain('taint: off')
 })
 
 test('a worst-case result at the 1 MiB total is redacted by the hook well inside three seconds', async ($, on) => {

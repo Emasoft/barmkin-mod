@@ -160,13 +160,24 @@ test('merging never lowers a score any single window gave', () => {
   }
 })
 
-test('mergeWindowScores gives the production pair as one score source', () => {
-  expect(mergeWindowScores([ok({ injection: 0.3, credentials: 0.1 }), ok({ injection: 0.4, credentials: 0.05 })])).toEqual({
+test('mergeWindowScores gives the production screen\'s three answers, the highest per question over the windows', () => {
+  expect(
+    mergeWindowScores([
+      ok({ injection: 0.3, exfiltration: 0.7, credentials: 0.1 }),
+      ok({ injection: 0.4, exfiltration: 0.2, credentials: 0.05 }),
+    ]),
+  ).toEqual({
     model: 'jev-1.13.0',
     injection: 0.4,
+    exfiltration: 0.7,
     credentials: 0.1,
   })
   expect(mergeWindowScores([failed])).toBeNull()
+})
+
+test('mergeWindowScores: a failed window never lowers a score, and exfiltration merges like the others', () => {
+  expect(mergeWindowScores([failed, ok({ injection: 0, exfiltration: 0.9, credentials: 0 }), failed])?.exfiltration).toBe(0.9)
+  expect(mergeWindowScores([ok({ injection: 0, exfiltration: 0.9, credentials: 0 }), ok({ injection: 0, exfiltration: 0.1, credentials: 0 })])?.exfiltration).toBe(0.9)
 })
 
 test('merging four-question answers keeps all four ids', () => {
