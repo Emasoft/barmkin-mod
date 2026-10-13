@@ -349,17 +349,17 @@ async function rootOf(ctx: PluginContext, sessionID: string): Promise<string> {
   const cached = rootCache.get(sessionID)
   if (cached !== undefined) return cached
   let current = sessionID
-  try {
-    for (let depth = 0; depth < MAX_ROOT_DEPTH; depth++) {
-      const found = (await ctx.session.get({ sessionID: current })) as { data?: unknown; parentID?: unknown } | null | undefined
-      const info = (found && typeof found === 'object' && 'data' in found && found.data ? found.data : found) as { parentID?: unknown } | null | undefined
-      const parent = info && typeof info.parentID === 'string' && info.parentID !== '' ? info.parentID : null
-      if (parent === null) break
-      current = parent
+  for (let depth = 0; depth < MAX_ROOT_DEPTH; depth++) {
+    let found: { data?: unknown; parentID?: unknown } | null | undefined
+    try {
+      found = (await ctx.session.get({ sessionID: current })) as { data?: unknown; parentID?: unknown } | null | undefined
+    } catch (error) {
+      throw new Error('barmkin-opencode: the session lineage lookup failed (' + (error instanceof Error ? error.message : String(error)) + '), so the session\'s taint could not be resolved')
     }
-  } catch {
-    // The lineage lookup failed: this session stands alone and is not cached, so a later call retries.
-    return sessionID
+    const info = (found && typeof found === 'object' && 'data' in found && found.data ? found.data : found) as { parentID?: unknown } | null | undefined
+    const parent = info && typeof info.parentID === 'string' && info.parentID !== '' ? info.parentID : null
+    if (parent === null) break
+    current = parent
   }
   rootCache.set(sessionID, current)
   return current
@@ -911,10 +911,8 @@ async function toolAfter(ctx: PluginContext, e: ToolAfterEvent): Promise<void> {
     const meta = await toolMeta(ctx, e.tool)
     const payload = e.status === 'completed' ? e.result : e.error
 
-    if (e.status === 'completed') {
-      const withheld = await screenAfterResult(root, e, meta)
-      if (withheld) return
-    }
+    const withheld = await screenAfterResult(root, e, meta)
+    if (withheld) return
     if (warning !== undefined && e.status === 'completed') appendAfterContext(e, warning)
 
     // Over the budget: a result nothing can scan whole is withheld, with the
@@ -965,9 +963,9 @@ function screenLabelFor(toolId: string, meta: ToolMeta, input: unknown): string 
   return null
 }
 
-// Screens a completed result and a skill body. Returns true when the result was
+// Screens a completed or error result and a skill body. Returns true when the result was
 // withheld, in which case nothing else is done to it.
-async function screenAfterResult(root: string, e: ToolAfterEvent & { status: 'completed' }, meta: ToolMeta): Promise<boolean> {
+async function screenAfterResult(root: string, e: ToolAfterEvent, meta: ToolMeta): Promise<boolean> {
   if (e.tool === 'skill') {
     // TODO(W3): the text of a completed result.
     const text = readAfterText(e)
@@ -1056,7 +1054,12 @@ function boundaryRewriter(root: string): (value: string) => string {
 }
 
 async function modelBoundary(ctx: PluginContext, surface: 'context' | 'compaction' | 'generate' | 'title', e: SessionRequestEvent): Promise<void> {
-  const root = await rootOf(ctx, e.sessionID)
+  let root: string
+  try {
+    root = await rootOf(ctx, e.sessionID)
+  } catch (error) {
+    throw new Error('barmkin-opencode: the ' + surface + ' request was not sent (' + (error instanceof Error ? error.message : String(error)) + ')')
+  }
   // TODO(W3): system parts, messages and tool descriptions (or the title request's messages).
   mapModelStrings(surface, e, boundaryRewriter(root))
 }
