@@ -63,7 +63,6 @@ import {
 import { planWindows, unclassifiedChars, mergeWindowScores, mergeWindowAnswers } from './lib/classifier-windows'
 import {
   PRODUCTION_QUESTIONS,
-  SCREEN_QUESTION_IDS,
   SHADOW_ARMS,
   shadowQuestions,
   type ShadowArm,
@@ -135,11 +134,14 @@ const breakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'breakerOpenUntil' }
 const breakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'breakerFailureCount' }, 0)
 // The shadow screen's own breaker. A shadow failure never opens the classifier
 // breaker above, so it can neither flip the HUD to degraded nor push the
-// production screen back to the heuristics.
+// production screen back to the heuristics. The shadow screen is contrast
+// instrumentation only (the captain wording's four questions, and
+// destructive_command under the revised wording): never enforced, and the
+// destructive question never taints anywhere.
 const shadowBreakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'shadowBreakerOpenUntil' }, 0)
 const shadowBreakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'shadowBreakerFailureCount' }, 0)
-// What the four-question shadow screen answered for the last piece of content.
-// Annotation only: nothing reads it to taint, withhold or gate.
+// What the shadow screen answered for the last piece of content. Annotation
+// only: nothing reads it to taint, withhold or gate.
 const lastShadow = atom({ plugin: 'barmkin-mod', key: 'lastShadow' }, null as ShadowRecord | null)
 
 // Redaction placeholder counters. Not security state (no secret value is
@@ -292,10 +294,11 @@ async function retryWindow(
   results[i] = await callJevSystemOne($, jev, text, PRODUCTION_QUESTIONS)
 }
 
-// The four-question shadow screen: every window, once per wording arm, in
-// parallel with the production calls and bounded by the same timeout. No retry:
-// a shadow answer is never worth a second request. Results are indexed by arm,
-// then by window.
+// The shadow screen: every window, once per wording arm (the captain wording's
+// four questions; the revised wording's destructive_command), in parallel with
+// the production calls and bounded by the same timeout. Contrast data only,
+// never enforced. No retry: a shadow answer is never worth a second request.
+// Results are indexed by arm, then by window.
 async function classifyShadowWindows(
   $: any,
   jev: JevOptions,
@@ -482,7 +485,7 @@ async function recordShadow(
   results: SystemOneParseResult[][],
 ): Promise<string | null> {
   const arms: ShadowArmRecord[] = SHADOW_ARMS.map((arm: ShadowArm, i: number) => {
-    const merged = mergeWindowAnswers(results[i], SCREEN_QUESTION_IDS)
+    const merged = mergeWindowAnswers(results[i], Object.keys(shadowQuestions(arm)))
     return {
       arm,
       answered: merged === null ? 0 : merged.answered,
@@ -504,9 +507,8 @@ async function recordShadow(
   $.ui.log('barmkin-mod: shadow screen for ' + label + ': ' + arms.map(describeShadowArm).join(' | '), { to: 'debug' })
   const flagged: string[] = []
   for (const record of arms) {
-    for (const id of SCREEN_QUESTION_IDS) {
-      const p = record.scores[id]
-      if (p !== undefined && p >= DEFAULT_TAINT_THRESHOLDS.taintAt) flagged.push(record.arm + ' ' + id + ' ' + p.toFixed(2))
+    for (const [id, p] of Object.entries(record.scores)) {
+      if (p >= DEFAULT_TAINT_THRESHOLDS.taintAt) flagged.push(record.arm + ' ' + id + ' ' + p.toFixed(2))
     }
   }
   return flagged.length > 0 ? 'shadow, not enforced: ' + flagged.join(', ') : null
@@ -516,8 +518,37 @@ function describeShadowArm(record: ShadowArmRecord): string {
   const windows = record.answered + '/' + record.windows + ' windows'
   if (record.answered === 0) return '[' + record.arm + '] no window answered (' + windows + ')'
   return (
-    '[' + record.arm + '] ' + windows + ': ' + SCREEN_QUESTION_IDS.map((id) => id + '=' + (record.scores[id] ?? 0).toFixed(2)).join(' ')
+    '[' + record.arm + '] ' + windows + ': ' + Object.entries(record.scores).map(([id, p]) => id + '=' + p.toFixed(2)).join(' ')
   )
+}
+
+// The screen's outcome with the exfiltration question folded in. composeScreen
+// knows injection and credentials only; exfiltration joins the real verdict
+// here, on the same taintAt line, and can only raise it.
+type ScreenResult = Omit<ScreenOutcome, 'question' | 'scores'> & {
+  question: ScreenOutcome['question'] | 'exfiltration'
+  scores: ScreenOutcome['scores'] & { exfiltration: number }
+}
+
+// Taints on an exfiltration score at or above taintAt, as the injection and
+// credentials questions do. Raise-only: an outcome already tainted keeps its
+// driving question and reason (the first evidence wins), a pass becomes an
+// escalate, and exfiltration alone never withholds. Jev is its only source: no
+// local heuristic exists for it.
+function withExfiltration(screened: ScreenOutcome, exfiltration: number, jevModel: string | null): ScreenResult {
+  const scores = { ...screened.scores, exfiltration }
+  if (screened.tainted || jevModel === null || exfiltration < DEFAULT_TAINT_THRESHOLDS.taintAt) return { ...screened, scores }
+  return {
+    ...screened,
+    decision: 'escalate',
+    tainted: true,
+    reason: `content scored ${exfiltration.toFixed(2)} on the data-exfiltration question (>= ${DEFAULT_TAINT_THRESHOLDS.taintAt})`,
+    question: 'exfiltration',
+    probability: exfiltration,
+    model: jevModel,
+    scores,
+    withholdReason: 'the exfiltration screen flagged it',
+  }
 }
 
 // Screens one piece of untrusted content (a fetched page, an MCP result, a
@@ -529,7 +560,7 @@ async function screenContent(
   text: string,
   label: string,
   toolUseId: string | undefined,
-): Promise<ScreenOutcome> {
+): Promise<ScreenResult> {
   const raw = text
   if (exceedsScreenedLimit(raw)) {
     return {
@@ -539,7 +570,7 @@ async function screenContent(
       question: 'injection',
       probability: 0,
       model: 'heuristic',
-      scores: { injection: 0, credentials: 0 },
+      scores: { injection: 0, exfiltration: 0, credentials: 0 },
       withholdReason: SCREENED_LIMIT_REASON,
     }
   }
@@ -564,9 +595,11 @@ async function screenContent(
   let shadowNote: string | null = null
 
   if (canUseJev && plan && jevInput !== null) {
-    // The shadow screen asks the same windows its own questions, in parallel
-    // with the production calls, so it adds no wall time. Its own breaker gates
-    // it, and nothing it returns reaches the decision below.
+    // The shadow screen (contrast instrumentation: the captain wording, and
+    // destructive_command under the revised wording) asks the same windows its
+    // own questions, in parallel with the production calls, so it adds no wall
+    // time. Its own breaker gates it, and nothing it returns reaches the
+    // decision below.
     const shadowOpen = (await read($, shadowBreakerOpenUntil)) > now
     const [production, shadow] = await Promise.all([
       classifyWindows($, jev, jevInput, plan.windows),
@@ -585,14 +618,18 @@ async function screenContent(
     }
   }
 
-  const screened = composeScreen(local, mergeWindowScores(results))
+  // The production screen's three questions. Injection and credentials compose
+  // with the local scores (Jev only raises); exfiltration is Jev's alone and is
+  // folded in on top, so all three taint on the same per-question taintAt.
+  const jevScores = mergeWindowScores(results)
+  const screened = withExfiltration(composeScreen(local, jevScores), jevScores?.exfiltration ?? 0, jevScores?.model ?? null)
   // A withheld (deny) result never reaches Claude, so only content that does
   // is held to what the classifier read.
   const unclassified =
     plan && jevInput !== null ? unclassifiedChars(jevInput.length, plan.windows, results.map((r) => r?.ok === true)) : 0
   const gap =
     screened.decision === 'deny' ? null : classifierGapReason(jev.baseUrl !== '', jevInput === null ? null : jevInput.length, unclassified)
-  const composed: ScreenOutcome = gap
+  const composed: ScreenResult = gap
     ? { ...screened, tainted: true, decision: 'escalate', reason: screened.tainted ? screened.reason : gap }
     : screened
 
@@ -1302,7 +1339,7 @@ async function statusCommandHook($: any) {
     verdict
       ? 'last verdict: ' + verdict.decision + ' p=' + verdict.probability.toFixed(2) + ' model=' + verdict.model + ' question=' + verdict.question
       : 'last verdict: none yet',
-    'shadow screen (four questions, annotation only, never enforced): ' +
+    'shadow screen (contrast only: captain wording x4, revised destructive_command; annotation only, never enforced, never taints): ' +
       (shadowBreakerUntil > Date.now() ? 'breaker open, not asking' : 'breaker closed'),
     ...(shadow ? shadow.arms.map((record) => '  ' + shadow.label + ' ' + describeShadowArm(record)) : ['  no shadow answers yet']),
   ]
