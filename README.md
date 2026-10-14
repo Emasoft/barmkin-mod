@@ -113,7 +113,7 @@ The managed-settings floor is in [`packaging/managed-settings.example.json`](pac
 
 Every `injectHosts` entry must also be in `allowedDomains`. On NixOS, also set managed `sandbox.bwrapPath` and `sandbox.socatPath` to the store paths of `bubblewrap` and `socat`; without them every sandboxed command fails with `bwrap: command not found`, which is fail-closed but unusable.
 
-`claude plugin validate` does not schema-check settings files, so `npm test` holds a copy of the recipe and asserts that it raises no posture warning. `claude doctor` reports any value in it that Claude Code would reject: copy it into an empty `CLAUDE_CONFIG_DIR` as `settings.json` and run `claude doctor`.
+`claude plugin validate` does not schema-check settings files, so `npm test` holds a copy of the recipe and asserts that it raises no posture warning, and `tests/workflows/test_managed_settings_recipe.py` parses the shipped JSON itself and asserts every floor key. `claude doctor` reports any value in it that Claude Code would reject: copy it into an empty `CLAUDE_CONFIG_DIR` as `settings.json` and run `claude doctor`.
 
 A clear session shows one line beneath the mode switcher: green `🏰 Barmkin session guard active` when Jev is configured and its breaker is closed (this does not claim any request succeeded), or amber `🏰 Barmkin session guard degraded` when Jev is not configured or the breaker is open. A tainted session shows a single red `🚨 TAINTED` line above the prompt that names the clear path for the active `taint_clear` posture.
 

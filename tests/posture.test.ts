@@ -4,7 +4,7 @@ import { checkPosture } from '../hooks/lib/posture'
 // A copy of packaging/managed-settings.example.json: `claude plugin test` loads
 // only code files, so the recipe is mirrored here, and the recipe test below
 // fails if the floor it documents stops satisfying checkPosture. Keep the two
-// in step.
+// in step; tests/workflows/test_managed_settings_recipe.py checks the JSON file itself.
 const MANAGED_SETTINGS_EXAMPLE = {
   prependPlugins: ['barmkin-mod@your-marketplace', 'cc-plugin-sec-default@builtin'],
   disableSkillShellExecution: true,
@@ -236,8 +236,22 @@ test('the packaged managed-settings recipe satisfies every posture check', () =>
   expect(warnings).toEqual([])
 })
 
-test('the packaged recipe seats sec-default by its exact builtin id, after this plugin', () => {
-  expect(MANAGED_SETTINGS_EXAMPLE.prependPlugins).toEqual(['barmkin-mod@your-marketplace', 'cc-plugin-sec-default@builtin'])
+test('warns when cc-plugin-sec-default@builtin is seated ahead of this plugin', () => {
+  const warnings = checkPosture(
+    { merged: {}, policy: { prependPlugins: ['cc-plugin-sec-default@builtin', 'barmkin-mod@acme'] } },
+    'barmkin-mod',
+    [],
+  )
+  expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(true)
+})
+
+test('does not warn when this plugin is ahead of cc-plugin-sec-default@builtin', () => {
+  const warnings = checkPosture(
+    { merged: {}, policy: { prependPlugins: ['barmkin-mod@acme', 'cc-plugin-sec-default@builtin'] } },
+    'barmkin-mod',
+    [],
+  )
+  expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(false)
 })
 
 test('a fully hardened posture produces no warnings', () => {

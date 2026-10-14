@@ -23,6 +23,8 @@ export interface PostureSettings {
   policy: Record<string, unknown> | null
 }
 
+const SEC_DEFAULT_NAMES = ['sec-default', 'cc-plugin-sec-default']
+
 function pluginIdName(id: string): string {
   return id.split('@')[0] ?? id
 }
@@ -49,7 +51,7 @@ export function checkPosture(settings: PostureSettings, pluginName: string, mcpA
   const prependPlugins = Array.isArray(rawPrepend) ? rawPrepend.filter((v): v is string => typeof v === 'string') : null
 
   const ourIndex = prependPlugins ? prependPlugins.findIndex((id) => pluginIdName(id) === pluginName) : -1
-  const secDefaultIndex = prependPlugins ? prependPlugins.findIndex((id) => pluginIdName(id) === 'sec-default') : -1
+  const secDefaultIndex = prependPlugins ? prependPlugins.findIndex((id) => SEC_DEFAULT_NAMES.includes(pluginIdName(id))) : -1
 
   if (settings.policy === null) {
     warnings.push('seating, managed domain and managed MCP checks unverified: policy settings read failed.')
