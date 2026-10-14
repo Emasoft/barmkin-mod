@@ -68,7 +68,7 @@ Sensitive access (leg B) is set when a call touches a secret path such as `~/.ss
 
 barmkin-mod is a Claude Code plugin. Point your Claude Code plugin install at this repository, then fill in the options below when prompted.
 > [!IMPORTANT]
-> For full coverage, seat the plugin in managed `prependPlugins`. Unseated, it cannot see skill text, `CLAUDE.md` or other prompt-assembly content. If `sec-default` is seated ahead of it, it still cannot see `skill.prompt`, `prompt.context` or `prompt.section`.
+> For full coverage, seat the plugin in managed `prependPlugins` and apply the managed-settings floor (see [Seat requirements](#seat-requirements)). Unseated, it cannot see skill text, `CLAUDE.md` or other prompt-assembly content. If `sec-default` is seated ahead of it, it still cannot see `skill.prompt`, `prompt.context` or `prompt.section`.
 
 To try it from a local checkout:
 
@@ -84,8 +84,36 @@ At session start the mod runs a posture self-check and emits one line per condit
 - the plugin is not seated in managed `prependPlugins`,
 - `permissions.defaultMode` is `bypassPermissions`,
 - the Bash sandbox is off, which removes the OS-level egress floor,
+- `sandbox.failIfUnavailable` is unset, so a sandbox that cannot start lets commands run unsandboxed,
+- `sandbox.allowUnsandboxedCommands` is not `false`, so a command can opt out of the sandbox,
+- `sandbox.network.allowAllUnixSockets` is on, so sandboxed commands can reach any local Unix socket,
+- `sandbox.credentials` has no `mask` entry, so sandboxed commands see real tokens,
+- managed `sandbox.network.allowManagedDomainsOnly` is unset, so user or project settings can widen sandbox egress,
+- managed `allowManagedMcpServersOnly` and `allowedMcpServers` are not both set, so users can add their own MCP servers,
 - `disableSkillShellExecution` is unset, so skill inline shell bypasses every `tool.call` guard,
 - `mcp_server_allowlist` is empty.
+
+The seating, `allowManagedDomainsOnly` and managed MCP checks read managed (policy) settings only, because Claude Code honors those keys only there. The rest read the merged settings, whichever source set them. A settings read that fails is reported as unverified, never as passing.
+
+### Seat requirements
+
+The managed-settings floor is in [`packaging/managed-settings.example.json`](packaging/managed-settings.example.json). Claude Code reads managed settings only from the root-owned `/etc/claude-code/managed-settings.json`, so they apply to every session on the machine. Adapt the example, merge it into that file, and restart Claude Code. The floor only tightens. Applied as is, it raises no posture warning; `mcp_server_allowlist` is this plugin's own option and is set separately.
+
+| Setting | Floor | Why |
+|---|---|---|
+| `prependPlugins` | `["barmkin-mod@<marketplace>", "cc-plugin-sec-default@builtin"]` | Seats the mod ahead of sec-default. List sec-default by that exact builtin id: a seat list without it drops sec-default's protections. |
+| `sandbox.enabled` | `true` | The OS sandbox is the enforcement floor under the shell classes, which a quoting trick can evade. |
+| `sandbox.failIfUnavailable` | `true` | Claude Code refuses to start when the sandbox cannot start, instead of running commands unsandboxed. |
+| `sandbox.allowUnsandboxedCommands` | `false` | Claude Code ignores `dangerouslyDisableSandbox`, so every command runs sandboxed. |
+| `sandbox.network.allowAllUnixSockets` | `false` | On Linux, sandboxed commands then cannot open a Unix socket at all, so they cannot reach a local service outside the sandbox. `true` lifts that block. |
+| `sandbox.network.allowManagedDomainsOnly` | `true`, with `allowedDomains` | Only the managed domain allowlist applies to sandboxed egress. |
+| `sandbox.credentials` | a `mask` entry per token you use | Sandboxed commands see a sentinel, and the sandbox proxy swaps in the real value only for the listed `injectHosts`. On macOS and Windows `mask` degrades to `deny`. |
+| `disableSkillShellExecution` | `true` | Skill and slash-command inline shell is replaced with a placeholder instead of run outside the tool guards. |
+| `allowManagedMcpServersOnly` | `true`, with `allowedMcpServers` | Only the managed MCP allowlist applies; users can still deny servers for themselves. |
+
+Every `injectHosts` entry must also be in `allowedDomains`. On NixOS, also set managed `sandbox.bwrapPath` and `sandbox.socatPath` to the store paths of `bubblewrap` and `socat`; without them every sandboxed command fails with `bwrap: command not found`, which is fail-closed but unusable.
+
+`claude plugin validate` does not schema-check settings files, so `npm test` holds a copy of the recipe and asserts that it raises no posture warning. `claude doctor` reports any value in it that Claude Code would reject: copy it into an empty `CLAUDE_CONFIG_DIR` as `settings.json` and run `claude doctor`.
 
 A clear session shows one line beneath the mode switcher: green `🏰 Barmkin session guard active` when Jev is configured and its breaker is closed (this does not claim any request succeeded), or amber `🏰 Barmkin session guard degraded` when Jev is not configured or the breaker is open. A tainted session shows a single red `🚨 TAINTED` line above the prompt that names the clear path for the active `taint_clear` posture.
 
@@ -221,6 +249,7 @@ hooks/lib/              pure, unit-tested logic
   jev-questions.ts      the frozen classifier questions and their pinned wording
   classifier-windows.ts classifier windows and score merging
   posture.ts            posture checks
+packaging/              managed-settings floor recipe
 tests/                  one test file per lib module, plus integration
 opencode/               OpenCode 2.x port (Bun)
 .claude-plugin/         plugin manifest and option schema

@@ -1,0 +1,19 @@
+{
+  "prependPlugins": ["barmkin-mod@your-marketplace", "cc-plugin-sec-default@builtin"],
+  "disableSkillShellExecution": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [{ "serverName": "github" }],
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowManagedDomainsOnly": true,
+      "allowAllUnixSockets": false,
+      "allowedDomains": ["github.com", "api.github.com", "registry.npmjs.org"]
+    },
+    "credentials": {
+      "envVars": [{ "name": "GITHUB_TOKEN", "mode": "mask", "injectHosts": ["api.github.com"] }]
+    }
+  }
+}
