@@ -1,0 +1,8 @@
+{
+  "name": "barmkin-local",
+  "description": "Local marketplace for barmkin-mod, installed from this clone.",
+  "owner": { "name": "Emasoft" },
+  "plugins": [
+    { "name": "barmkin-mod", "source": "./" }
+  ]
+}
