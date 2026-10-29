@@ -1,6 +1,6 @@
 {
-  "name": "barmkin-local",
-  "description": "Local marketplace for barmkin-mod, installed from this clone.",
+  "name": "emasoft-barmkin",
+  "description": "Emasoft fork of barmkin-mod: Jev key from OPENROUTER_API_KEY, no OpenCode host. Installed from GitHub Emasoft/barmkin-mod.",
   "owner": { "name": "Emasoft" },
   "plugins": [
     { "name": "barmkin-mod", "source": "./" }
