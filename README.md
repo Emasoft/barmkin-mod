@@ -26,6 +26,21 @@ Emasoft fork of [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod): t
 | **Shadow screen** | Contrast instrumentation only: the captain's wording of all four questions, plus the destructive-command question in the revised wording. Annotation only. Destructive never taints. |
 | **Invisible-text scrub** | Strips ANSI escapes, bidi overrides, zero-width characters and the Unicode Tags block from tool results, descriptions and messages. |
 
+## What this fork changes, and why
+
+This fork keeps autonomous and unattended Claude Code sessions running while you are away, without giving up protection against truly dangerous actions. Each change below serves that goal, and its reason is written next to it so a later session can judge whether the reason still holds.
+
+- **The Jev key comes from the `OPENROUTER_API_KEY` environment variable.** The plugin no longer has a key option. Why: one source for the secret, shared with your other tools, and never written into settings.
+- **Default endpoint `https://openrouter.ai/api` and default model `~typesafe/jev-latest`.** Why: the classifier works with no configuration once the key is set, and it follows new Jev versions without an edit.
+- **Any Jev version reply is accepted.** The upstream check accepted only Jev 1.13. Why: the `jev-latest` alias moves across versions, and a fixed check would turn every screen into "classifier unavailable", which taints sessions. The questions and the 0.5 taint threshold were calibrated on Jev 1.13, so scores from a later version are uncalibrated; pin `typesafe/jev-1.13-20260917` for calibrated scores.
+- **The OpenCode host (`opencode/`, `opencode-canary/`) is removed.** Why: this fork targets Claude Code only.
+- **Installs from the marketplace of this fork, `emasoft-barmkin`.** Why: installs and updates come from the fork, not from the upstream marketplace.
+
+**In progress, NOT built yet.** This section will be updated as each part lands.
+
+- **Jev decides in place of an absent user.** A conservative command gate blocks only blatantly destructive, malicious or exfiltrating commands, reads the recent messages of the agent for context, and allows temporary and cache cleanup. Why: when no person is present to answer a prompt, a classifier should decide, but only for the clear cases.
+- **Strict rules switchable on and off with a slash command.** Why: strict rules protect an attended session but block an unattended one, so the posture must be selectable per session.
+
 ## Quick start
 
 **Requirements:** Claude Code **2.1.287 or later** (the mod checks at session start and warns on older builds), and Node 22 for validation and tests.
