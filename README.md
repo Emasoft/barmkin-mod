@@ -2,7 +2,9 @@
 
 **A security layer for Claude Code, shipped as a Claude Code mods plugin.** It redacts secrets, tracks untrusted content, and blocks the tool calls that would let an injected instruction send your data somewhere.
 
-[![CI](https://github.com/samfrmr/barmkin-mod/actions/workflows/ci.yml/badge.svg)](https://github.com/samfrmr/barmkin-mod/actions/workflows/ci.yml)
+[![CI](https://github.com/Emasoft/barmkin-mod/actions/workflows/ci.yml/badge.svg)](https://github.com/Emasoft/barmkin-mod/actions/workflows/ci.yml)
+
+Emasoft fork of [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod): the Jev key comes from OPENROUTER_API_KEY, the default endpoint is OpenRouter, and the OpenCode host is removed.
 
 [Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [How it works](#how-it-works) · [Limits](#limits) · [Development](#development)
 
@@ -28,7 +30,7 @@
 
 **Requirements:** Claude Code **2.1.287 or later** (the mod checks at session start and warns on older builds), and Node 22 for validation and tests.
 
-barmkin-mod is a Claude Code plugin. Point your plugin install at this repository (`https://github.com/samfrmr/barmkin-mod`), then fill in the [options](#configuration) when prompted.
+barmkin-mod is a Claude Code plugin. Install it with `claude plugin marketplace add Emasoft/barmkin-mod`, then `claude plugin install barmkin-mod@emasoft-barmkin`, then fill in the [options](#configuration) when prompted. The Jev key comes from the OPENROUTER_API_KEY environment variable.
 - Outward-effect shell commands (`shell-outward`): `git push`, `curl` with a body, `scp` to a host, a pipe to `sh`, and similar. *Denies on A alone.*
 - Network clients (`net-client`): `curl`/`wget` with a body flag or a `$(…)`/backtick URL substitution, the socket tools `nc`/`ncat`/`socat`/`telnet`/`ftp`, `/dev/tcp` and `/dev/udp`, and `ssh`/`scp`/`sftp`/`rsync` to a remote. `nc -z` port scans and local-only copies are excluded; a `curl`/`wget` to `localhost` without substitution is exempt. *Denies on A alone.*
 - DNS/probe exfil (`dns`): `nslookup`/`dig`/`host`/`ping`/`traceroute`/… with a substituted name. *Warns on A alone.*
@@ -73,7 +75,7 @@ barmkin-mod is a Claude Code plugin. Point your Claude Code plugin install at th
 To try it from a local checkout:
 
 ```sh
-git clone https://github.com/samfrmr/barmkin-mod.git
+git clone https://github.com/Emasoft/barmkin-mod.git
 cd barmkin-mod
 npm ci
 npm run validate   # claude plugin validate --strict .
@@ -224,7 +226,7 @@ npm test           # claude plugin test
 
 CI runs both on every push to `main` and on pull requests, alongside workflow tests, a gitleaks secret scan (`.gitleaks.toml`) and CodeQL. The Claude Code dependency in `package.json` is pinned to the version floor, so CI is the real verification surface.
 
-Pull requests go to this fork, [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod), not to an upstream repository.
+Pull requests for this fork go to [Emasoft/barmkin-mod](https://github.com/Emasoft/barmkin-mod). The original project is [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod).
 
 Guarding hooks fail closed: if one errors, the action is denied or the content withheld. Advisory hooks, such as the HUD, fail open and leave the result unchanged.
 
