@@ -178,13 +178,32 @@ interface JevOptions {
   apiKey: string
 }
 
-function getJevOptions(options: Record<string, unknown>): JevOptions {
+// The OpenRouter key comes ONLY from the OPENROUTER_API_KEY environment variable,
+// read where it is used (each screen and each HUD render), never from a plugin
+// option. Why not once at session start: session.start alone would set it, so a
+// screen that runs without that event would silently see no key. The literal
+// name is required: the mods analyser refuses a variable.
+async function readOpenRouterKey($: any): Promise<string> {
+  const key = await $.env.get('OPENROUTER_API_KEY')
+  return typeof key === 'string' ? key : ''
+}
+
+// The defaults send Jev to OpenRouter, whose ~typesafe/jev-latest alias follows the
+// newest Jev 1.x. Why the key is a parameter: it is read from the environment only
+// (readOpenRouterKey), so an empty key means Jev is not configured.
+function getJevOptions(options: Record<string, unknown>, apiKey: string): JevOptions {
   const rawBase = typeof options.jev_base_url === 'string' ? options.jev_base_url.trim() : ''
   return {
-    baseUrl: rawBase.replace(/\/+$/, ''),
-    model: typeof options.jev_model === 'string' && options.jev_model ? options.jev_model : 'jev-1.13.0',
-    apiKey: typeof options.jev_api_key === 'string' ? options.jev_api_key : '',
+    baseUrl: (rawBase || 'https://openrouter.ai/api').replace(/\/+$/, ''),
+    model: typeof options.jev_model === 'string' && options.jev_model ? options.jev_model : '~typesafe/jev-latest',
+    apiKey,
   }
+}
+
+// Jev counts as configured only with a key: without one every request would fail
+// with 401, so a missing OPENROUTER_API_KEY must read as not configured here.
+function jevConfigured(jev: JevOptions): boolean {
+  return jev.apiKey !== ''
 }
 
 function parseAllowlist(raw: unknown): string[] {
@@ -575,10 +594,10 @@ async function screenContent(
     }
   }
   text = scrubInvisible(raw).text
-  const jev = getJevOptions(pluginOptions)
+  const jev = getJevOptions(pluginOptions, await readOpenRouterKey($))
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
-  const canUseJev = jev.baseUrl !== '' && breakerUntil <= now
+  const canUseJev = jevConfigured(jev) && breakerUntil <= now
 
   const local: ScoreSource = {
     model: 'heuristic',
@@ -589,7 +608,7 @@ async function screenContent(
   // What the classifier would be sent, cut into its windows. Computed whenever
   // Jev is configured (even with the breaker open) to tell how much of the
   // content was classified.
-  const jevInput = jev.baseUrl !== '' ? classifierInput(raw, REDACTION_RULES, redactionCounters) : null
+  const jevInput = jevConfigured(jev) ? classifierInput(raw, REDACTION_RULES, redactionCounters) : null
   const plan = jevInput === null ? null : planWindows(jevInput)
   let results: (SystemOneParseResult | null)[] = plan ? plan.windows.map(() => null) : []
   let shadowNote: string | null = null
@@ -628,7 +647,7 @@ async function screenContent(
   const unclassified =
     plan && jevInput !== null ? unclassifiedChars(jevInput.length, plan.windows, results.map((r) => r?.ok === true)) : 0
   const gap =
-    screened.decision === 'deny' ? null : classifierGapReason(jev.baseUrl !== '', jevInput === null ? null : jevInput.length, unclassified)
+    screened.decision === 'deny' ? null : classifierGapReason(jevConfigured(jev), jevInput === null ? null : jevInput.length, unclassified)
   const composed: ScreenResult = gap
     ? { ...screened, tainted: true, decision: 'escalate', reason: screened.tainted ? screened.reason : gap }
     : screened
@@ -1253,8 +1272,8 @@ const TAINT_COLOR = 'error'
 const CLEAR_ACTIVE = { color: 'success', label: '🏰 Barmkin session guard active' }
 const CLEAR_DEGRADED = { color: 'warning', label: '🏰 Barmkin session guard degraded' }
 
-function clearLabelFor(breakerOpen: boolean) {
-  return getJevOptions(pluginOptions).baseUrl !== '' && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
+function clearLabelFor(breakerOpen: boolean, jev: JevOptions) {
+  return jevConfigured(jev) && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
 }
 
 async function hudHook($: any, e: any, next: any) {
@@ -1300,7 +1319,7 @@ async function hintHook($: any, e: any, next: any) {
   if (isTainted) return theirs
   const { Box, Text } = $.ui.resolve(e)
   const breakerUntil = await read($, breakerOpenUntil)
-  const clear = clearLabelFor(breakerUntil > Date.now())
+  const clear = clearLabelFor(breakerUntil > Date.now(), getJevOptions(pluginOptions, await readOpenRouterKey($)))
   const label = Text({ key: 'barmkin-mod-active', color: clear.color, children: [clear.label] })
   return Box({ flexDirection: 'column', children: [theirs, label].filter(Boolean) })
 }

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/samfrmr/barmkin-mod/actions/workflows/ci.yml/badge.svg)](https://github.com/samfrmr/barmkin-mod/actions/workflows/ci.yml)
 
-[Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [How it works](#how-it-works) · [Limits](#limits) · [OpenCode 2.x](#opencode-2x-partial-port) · [Development](#development)
+[Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [How it works](#how-it-works) · [Limits](#limits) · [Development](#development)
 
 > [!NOTE]
 > barmkin-mod only ever tightens. Every hook adds a deny, withhold or warning on top of a decision someone else made. None of them can turn a deny into an allow.
@@ -93,9 +93,9 @@ A clear session shows one line beneath the mode switcher: green `🏰 Barmkin se
 
 | Option | Default | Purpose |
 |---|---|---|
-| `jev_base_url` | empty | System One endpoint, OpenRouter or Vercel AI Gateway style. The mod POSTs to `{base_url}/v1/systemone`. Empty disables the classifier and falls back to pattern heuristics. |
-| `jev_model` | `jev-1.13.0` | Pinned Jev model id. Must match the `jev-1.13` pattern. |
-| `jev_api_key` | none | Bearer credential. Stored in secure credential storage and never logged. |
+| `jev_base_url` | `https://openrouter.ai/api` | System One endpoint, OpenRouter style by default. The mod POSTs to `{base_url}/v1/systemone`. An empty value uses this default. |
+| `jev_model` | `~typesafe/jev-latest` | Jev model id or alias. Any Jev 1.x reply is accepted. |
+| `OPENROUTER_API_KEY` (environment variable, not a plugin option) | none | Bearer key for the endpoint, read from the environment at each use and never logged. Without it Jev is not configured and the classifier is not called. |
 | `mcp_server_allowlist` | empty | Comma-separated MCP server names allowed to run tools. Empty allows all (audit only). |
 | `taint_clear` | `human-origin` | `human-origin`: a person's prompt clears the taint. `sticky`: it holds until `/compact`, `/clear` or `/barmkin-mod-clear-taint`. |
 | `sdk_prompts_clear_taint` | `false` | Let SDK prompts clear the taint. For headless lanes (`claude -p`, the Agent SDK) only. |
@@ -197,15 +197,6 @@ A shadow screen runs next to production for contrast only: the captain's wording
 
 - Secret rules are a hand-maintained copy of barmkin's. Keep them in sync when barmkin changes.
 
-## OpenCode 2.x (partial port)
-
-The second host lives in [`opencode/`](opencode/). It reuses the host-neutral library in `hooks/lib/` and adds an OpenCode plugin, `barmkin-opencode`, that redacts secrets, taints a session on untrusted content, and refuses outward-effect tools while the session is tainted. A separate [`opencode-canary/`](opencode-canary/) plugin reports when the guard is not loaded.
-
-> [!WARNING]
-> This is a partial port, not equivalent to barmkin-mod for Claude Code. OpenCode 2 has no administrator-locked plugin seat, so a repository's `opencode.json` can unload the guard unless it is seated as described in the OpenCode README. No posture line means no guard.
-
-See [`opencode/README.md`](opencode/README.md) for the seat recipe, install steps, tested range and the list of what is not covered.
-
 ## Development
 
 ```text
@@ -222,7 +213,6 @@ hooks/lib/              pure, unit-tested logic
   classifier-windows.ts classifier windows and score merging
   posture.ts            posture checks
 tests/                  one test file per lib module, plus integration
-opencode/               OpenCode 2.x port (Bun)
 .claude-plugin/         plugin manifest and option schema
 ```
 

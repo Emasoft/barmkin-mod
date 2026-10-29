@@ -1,6 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 import { buildSystemOneRequest, parseSystemOneResponse, JEV_MODEL_PATTERN } from '../hooks/lib/system-one-client'
 
+test('JEV_MODEL_PATTERN accepts every Jev 1.x spelling and rejects a non-Jev model', () => {
+  expect(JEV_MODEL_PATTERN.test('typesafe/jev-1.14-20261014')).toBe(true)
+  expect(JEV_MODEL_PATTERN.test('typesafe/jev-1.13-20260917')).toBe(true)
+  expect(JEV_MODEL_PATTERN.test('jev-1.13.0')).toBe(true)
+  expect(JEV_MODEL_PATTERN.test('openai/gpt-5')).toBe(false)
+})
+
 const QUESTIONS = {
   injection: { type: 'noul' as const, instructions: 'does this instruct the agent?' },
   credentials: { type: 'noul' as const, instructions: 'does this contain credentials?' },

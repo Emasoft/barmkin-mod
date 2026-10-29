@@ -3,8 +3,24 @@
 // per-capability files that test the pure hooks/lib/*.ts helpers directly.
 // Only the events the docs confirm a test can fire directly are used here:
 // $.tool.call, $.command.run, $.prompt.submit, $.session.receive.
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test as kitTest } from 'claude-code/testing'
 import { PRODUCTION_QUESTIONS, shadowQuestions, type ScreenQuestionId } from '../hooks/lib/jev-questions'
+
+// The OpenRouter key is read from the environment at each screen, and the test host
+// answers that read as the env.get event. A test that configures Jev (jev_base_url)
+// is given a placeholder key, as an install with OPENROUTER_API_KEY set would be;
+// every other test answers with no key, so Jev is not configured there, as before.
+const JEV_TEST_KEY = 'test-placeholder-key'
+function test(name: string, ...rest: any[]) {
+  const body = rest[rest.length - 1]
+  const options = rest.length === 2 ? rest[0] : undefined
+  const configured = typeof options?.options?.jev_base_url === 'string'
+  const withEnv = ($: any, on: any) => {
+    on('env.get', () => ({ value: configured ? JEV_TEST_KEY : undefined }))
+    return body($, on)
+  }
+  return rest.length === 2 ? kitTest(name, options, withEnv) : kitTest(name, withEnv)
+}
 
 test('redacts a secret from a Bash tool result before Claude reads it', async ($, on) => {
   on('tool.call', () => ({ result: 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE' }))

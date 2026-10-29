@@ -30,7 +30,10 @@ export function buildSystemOneRequest(
   return { model, state, questions }
 }
 
-export const JEV_MODEL_PATTERN = /jev-1\.13\b/
+// Why not pinned to jev-1.13: the OpenRouter alias ~typesafe/jev-latest moves across
+// Jev 1.x releases (today it answers typesafe/jev-1.14-20261014), so a pinned minor
+// would reject every reply. The check still rejects a reply from a non-Jev model.
+export const JEV_MODEL_PATTERN = /\bjev-1\.\d+\b/
 
 export type SystemOneParseResult =
   | { ok: true; answers: Record<string, number>; model: string }

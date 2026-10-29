@@ -12,19 +12,14 @@
     "jev_base_url": {
       "type": "string",
       "title": "Jev System One base URL",
-      "description": "System One wire-format endpoint (OpenRouter or Vercel AI Gateway style, e.g. https://openrouter.ai/api). The mod POSTs to {base_url}/v1/systemone. Never barmkin's internal gateway. Leave empty to run with the classifier disabled (taint marking falls back to pattern heuristics only)."
+      "description": "System One wire-format endpoint, OpenRouter style by default (https://openrouter.ai/api). The mod POSTs to {base_url}/v1/systemone. Never the barmkin internal gateway. An empty value uses this default. The API key is not an option: it comes from the OPENROUTER_API_KEY environment variable.",
+      "default": "https://openrouter.ai/api"
     },
     "jev_model": {
       "type": "string",
       "title": "Jev model id",
-      "description": "Pinned Jev model spelling for your provider, e.g. jev-1.13.0 (TypeSafe direct) or typesafe/jev-1.13-20260917 (OpenRouter). Must match the jev-1.13 pattern.",
-      "default": "jev-1.13.0"
-    },
-    "jev_api_key": {
-      "type": "string",
-      "title": "Jev API key",
-      "description": "Bearer credential for the System One endpoint. Stored in secure credential storage, never written to settings.json or logged.",
-      "sensitive": true
+      "description": "Jev model id or alias. The default ~typesafe/jev-latest follows the newest Jev 1.x, and any Jev 1.x reply is accepted.",
+      "default": "~typesafe/jev-latest"
     },
     "mcp_server_allowlist": {
       "type": "string",
