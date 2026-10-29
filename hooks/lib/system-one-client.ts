@@ -30,10 +30,11 @@ export function buildSystemOneRequest(
   return { model, state, questions }
 }
 
-// Why not pinned to jev-1.13: the OpenRouter alias ~typesafe/jev-latest moves across
-// Jev 1.x releases (today it answers typesafe/jev-1.14-20261014), so a pinned minor
-// would reject every reply. The check still rejects a reply from a non-Jev model.
-export const JEV_MODEL_PATTERN = /\bjev-1\.\d+\b/
+// Why any Jev version, not only 1.x: the owner chose the OpenRouter alias ~typesafe/jev-latest so
+// the mod follows new Jev versions (today it answers typesafe/jev-1.14-20261014). A 1.x-only pattern
+// would turn every screen into "classifier unavailable" the day the alias moves to 2.x, and the
+// windows it could not read taint the session. The check still rejects a reply from a non-Jev model.
+export const JEV_MODEL_PATTERN = /\bjev-\d+\.\d+\b/
 
 export type SystemOneParseResult =
   | { ok: true; answers: Record<string, number>; model: string }

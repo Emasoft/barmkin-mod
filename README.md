@@ -94,7 +94,7 @@ A clear session shows one line beneath the mode switcher: green `🏰 Barmkin se
 | Option | Default | Purpose |
 |---|---|---|
 | `jev_base_url` | `https://openrouter.ai/api` | System One endpoint, OpenRouter style by default. The mod POSTs to `{base_url}/v1/systemone`. An empty value uses this default. |
-| `jev_model` | `~typesafe/jev-latest` | Jev model id or alias. Any Jev 1.x reply is accepted. |
+| `jev_model` | `~typesafe/jev-latest` | Jev model id or alias. Any Jev reply is accepted. The classifier's questions and its 0.5 taint threshold were calibrated on Jev 1.13; on a later version (the default `~typesafe/jev-latest` is 1.14 today) scores are uncalibrated, and `typesafe/jev-1.13-20260917` pins the calibrated version. |
 | `OPENROUTER_API_KEY` (environment variable, not a plugin option) | none | Bearer key for the endpoint, read from the environment at each use and never logged. Without it Jev is not configured and the classifier is not called. |
 | `mcp_server_allowlist` | empty | Comma-separated MCP server names allowed to run tools. Empty allows all (audit only). |
 | `taint_clear` | `human-origin` | `human-origin`: a person's prompt clears the taint. `sticky`: it holds until `/compact`, `/clear` or `/barmkin-mod-clear-taint`. |

@@ -10,16 +10,18 @@ import { PRODUCTION_QUESTIONS, shadowQuestions, type ScreenQuestionId } from '..
 // answers that read as the env.get event. A test that configures Jev (jev_base_url)
 // is given a placeholder key, as an install with OPENROUTER_API_KEY set would be;
 // every other test answers with no key, so Jev is not configured there, as before.
+// A test that needs the owner's configuration (no plugin options, key set) says so with
+// openrouterKey: true in its options. That field is stripped before the kit sees the options.
 const JEV_TEST_KEY = 'test-placeholder-key'
 function test(name: string, ...rest: any[]) {
   const body = rest[rest.length - 1]
-  const options = rest.length === 2 ? rest[0] : undefined
-  const configured = typeof options?.options?.jev_base_url === 'string'
+  const { openrouterKey, ...options } = rest.length === 2 ? rest[0] : {}
+  const hasKey = typeof openrouterKey === 'boolean' ? openrouterKey : typeof options?.options?.jev_base_url === 'string'
   const withEnv = ($: any, on: any) => {
-    on('env.get', () => ({ value: configured ? JEV_TEST_KEY : undefined }))
+    on('env.get', () => ({ value: hasKey ? JEV_TEST_KEY : undefined }))
     return body($, on)
   }
-  return rest.length === 2 ? kitTest(name, options, withEnv) : kitTest(name, withEnv)
+  return rest.length === 2 && Object.keys(options).length > 0 ? kitTest(name, options, withEnv) : kitTest(name, withEnv)
 }
 
 test('redacts a secret from a Bash tool result before Claude reads it', async ($, on) => {
@@ -617,6 +619,30 @@ test('a prompt that does not clear the taint is still redacted', async ($, on) =
 const STICKY = { options: { taint_clear: 'sticky' } }
 const JEV = { options: { jev_base_url: 'https://jev.example' } }
 const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
+
+// The owner's configuration: no plugin options, and a key set in the environment. Every System One
+// request must go to OpenRouter, with the default model and the bearer key.
+test('owner configuration: no plugin options and a key set sends a WebFetch screen to OpenRouter', { openrouterKey: true }, async ($, on) => {
+  const requests: any[] = []
+  on('http.fetch', (_$: any, e: any) => {
+    requests.push(e)
+    return { value: { ok: true, status: 200, text: jevResponse(describeJevCall(JSON.parse(e.init.body)), {}) } }
+  })
+  on('tool.call', () => ({ result: 'short page' }))
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  expect(requests.length).toBeGreaterThan(0)
+  expect(requests.every((e) => e.url === 'https://openrouter.ai/api/v1/systemone')).toBe(true)
+  expect(requests.every((e) => e.init.headers.Authorization === 'Bearer ' + JEV_TEST_KEY)).toBe(true)
+  expect(requests.every((e) => JSON.parse(e.init.body).model === '~typesafe/jev-latest')).toBe(true)
+})
+
+// The owner's configuration with no key in the environment: Jev is not configured, so nothing is sent.
+test('owner configuration with no key makes no System One request', async ($, on) => {
+  const calls = jevMock($, on, 0.05)
+  on('tool.call', () => ({ result: 'short page' }))
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  expect(calls).toHaveLength(0)
+})
 
 const gitPushDenied = async ($: any) => (await $.tool.call({ tool: 'Bash', command: 'git push origin main' })).deny !== undefined
 
