@@ -1777,8 +1777,9 @@ async function switchPaneHook($: any, e: any, next: any) {
       key: 'switch-' + def.id,
       label: (on ? '✓ on  ' : '✗ OFF ') + def.id.padEnd(SWITCH_ID_WIDTH),
       plain: true,
-      onPress: () => {
-        void setSwitch($, def.id, 'toggle').catch((error: unknown) =>
+      // Awaited, so the press resolves once the switch is saved and $.state holds it.
+      onPress: async () => {
+        await setSwitch($, def.id, 'toggle').catch((error: unknown) =>
           noteSwitches($, 'barmkin-mod: the ' + def.id + ' switch could not be saved (' + String(error) + '), so it is unchanged.'),
         )
       },
