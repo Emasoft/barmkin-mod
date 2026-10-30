@@ -1762,7 +1762,8 @@ const SWITCH_PANE_WIDE_COLUMNS = 72
 const SWITCH_ID_WIDTH = Math.max(...SWITCH_DEFS.map((d) => d.id.length))
 
 // The switch panel: one button per switch, flipped by a click or by Enter on
-// the focused row (Tab, Up and Down move between rows). No hotkeys: one stray
+// the focused row (Tab moves between rows; Up and Down do too while the list
+// fits, and scroll it when it does not). No hotkeys: one stray
 // key would turn a protection off. One render path for every surface.
 async function switchPaneHook($: any, e: any, next: any) {
   if (e.requestId !== SWITCH_PANE_ID) return next(e)
