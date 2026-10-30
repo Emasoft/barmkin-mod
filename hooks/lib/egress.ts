@@ -814,6 +814,22 @@ export function decideEgress(classes: readonly EgressClass[], legs: TrifectaLegs
   }
 }
 
+// Which escalations of decideEgress apply, one per switch: `taintBlocksEgress`
+// lets leg A alone give each class its posture, `ruleOfTwo` lets legs A and B
+// together deny every class. With both on this is decideEgress itself. An
+// escalation that is off is decided as if its leg were not held, so the call
+// gets the verdict a less suspicious session would get, never an allow.
+export interface EgressEffects {
+  taintBlocksEgress: boolean
+  ruleOfTwo: boolean
+}
+
+export function decideEgressWith(classes: readonly EgressClass[], legs: TrifectaLegs, effects: EgressEffects): EgressVerdict {
+  if (legs.untrusted && legs.sensitive && effects.ruleOfTwo) return decideEgress(classes, legs)
+  if (legs.untrusted && effects.taintBlocksEgress) return decideEgress(classes, { ...legs, sensitive: false })
+  return decideEgress(classes, { ...legs, untrusted: false, sensitive: false })
+}
+
 // ---------------------------------------------------------------------------
 // Inline skill shell. A skill's `!`command`` runs with no model proposal and
 // no human typing it, and reaches only tool.check, with an empty tool_use_id.
