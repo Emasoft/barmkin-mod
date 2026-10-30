@@ -6,7 +6,7 @@
 
 Emasoft fork of [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod): the Jev key comes from OPENROUTER_API_KEY, the default endpoint is OpenRouter, and the OpenCode host is removed.
 
-[Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [How it works](#how-it-works) · [Limits](#limits) · [Development](#development)
+[Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration) · [Switches](#switches) · [How it works](#how-it-works) · [Limits](#limits) · [Development](#development)
 
 > [!NOTE]
 > barmkin-mod only ever tightens. Every hook adds a deny, withhold or warning on top of a decision someone else made. None of them can turn a deny into an allow.
@@ -25,6 +25,7 @@ Emasoft fork of [samfrmr/barmkin-mod](https://github.com/samfrmr/barmkin-mod): t
 | **Jev System One classifier** | An optional remote classifier with an explanation surface (`/barmkin-mod-status`, the HUD and the permission notice). It can only raise suspicion, never lower it. Production screening enforces three questions: prompt injection, data exfiltration and contains-secrets, in the revised wording. |
 | **Shadow screen** | Contrast instrumentation only: the captain's wording of all four questions, plus the destructive-command question in the revised wording. Annotation only. Destructive never taints. |
 | **Invisible-text scrub** | Strips ANSI escapes, bidi overrides, zero-width characters and the Unicode Tags block from tool results, descriptions and messages. |
+| **Switches and self-protection** | Every protection above has a switch, on by default, set from a panel or `/barmkin-mod-rule`. Only a person can change one, and the mod guards its own switches, install and settings. See [Switches](#switches). |
 
 ## What this fork changes, and why
 
@@ -35,11 +36,12 @@ This fork keeps autonomous and unattended Claude Code sessions running while you
 - **Any Jev version reply is accepted.** The upstream check accepted only Jev 1.13. Why: the `jev-latest` alias moves across versions, and a fixed check would turn every screen into "classifier unavailable", which taints sessions. The questions and the 0.5 taint threshold were calibrated on Jev 1.13, so scores from a later version are uncalibrated; pin `typesafe/jev-1.13-20260917` for calibrated scores.
 - **The OpenCode host (`opencode/`, `opencode-canary/`) is removed.** Why: this fork targets Claude Code only.
 - **Installs from the marketplace of this fork, `emasoft-barmkin`.** Why: installs and updates come from the fork, not from the upstream marketplace.
+- **Every protection can be switched on and off, from a panel or a slash command.** `/barmkin-mod-panel` opens the switch panel, `/barmkin-mod-rule list` lists the switches, and `/barmkin-mod-rule <id> on|off` sets one. Every switch starts on, which is exactly how 0.2.2 behaved. Why: strict rules protect an attended session but block an unattended one, so the posture must be selectable. See [Switches](#switches).
+- **Self-protection guards the switches and the mod itself.** While it is on, the model cannot run the switch command through a tool, write the switch store, edit the settings entries of this plugin, or uninstall or disable it. Why: a switch the model can turn off protects nothing.
 
 **In progress, NOT built yet.** This section will be updated as each part lands.
 
 - **Jev decides in place of an absent user.** A conservative command gate blocks only blatantly destructive, malicious or exfiltrating commands, reads the recent messages of the agent for context, and allows temporary and cache cleanup. Why: when no person is present to answer a prompt, a classifier should decide, but only for the clear cases.
-- **Strict rules switchable on and off with a slash command.** Why: strict rules protect an attended session but block an unattended one, so the posture must be selectable per session.
 
 ## Quick start
 
@@ -121,6 +123,46 @@ A clear session shows one line beneath the mode switcher: green `🏰 Barmkin se
 |---|---|
 | `/barmkin-mod-status` | Show taint, circuit-breaker state, the last classifier verdict and the last shadow-screen scores. |
 | `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. The only way to clear a taint for content the classifier could not read. |
+| `/barmkin-mod-rule list` | List every switch with its state. |
+| `/barmkin-mod-rule <id> on\|off` | Turn one switch on or off, only from a person's prompt. |
+| `/barmkin-mod-panel` | Open the switch panel and give it the focus. |
+
+## Switches
+
+Each protection has a switch. Every switch starts **on**, which is exactly how 0.2.2 behaved. A switch that is off skips its check; it never turns a deny into an allow, and it cannot loosen a decision made by Claude Code or another plugin.
+
+- **The panel.** `/barmkin-mod-panel` opens a pane that lists every switch. In a wide fullscreen terminal it docks beside the chat; otherwise it opens above the prompt. It also opens by itself at session start, without taking the focus. Click a row in the Desktop app, or move with the arrow keys and press Enter in the terminal, to flip it.
+- **The command.** `/barmkin-mod-rule list` prints every switch with its state. `/barmkin-mod-rule <id> on` or `/barmkin-mod-rule <id> off` sets one.
+- **Who may change a switch.** Only a person: a prompt typed in the composer or sent through the bridge, or a click or key press on the panel. A plugin (even one acting as the user), the SDK, a task notification, a scheduled trigger and a peer session are refused, and the refusal names the origin it saw. While self-protection is on, the model cannot reach the command through the Skill tool, nor the switch store through a file tool, an MCP tool or the shell.
+- **Where they are kept.** The switches are saved user-wide in the store of the mod, so they hold for every session and project. Each session keeps a hash of what it last saw. If the store changes from outside the mod during the session, the session writes its own values back and shows a notice. Between sessions the store is trusted as written, and the session-start log names every switch that is off.
+- **What you see.** While a protection is off, one amber line above the prompt names every switch that is off, and the guard label turns amber. `/barmkin-mod-status` lists them too. The shadow screen is annotation only, so turning it off draws no warning.
+
+`self-protection` is new in 0.3.0. `web-screen`, `skill-shell-mediation` and `a2a-outbound` are new switches for checks that 0.2.2 ran as part of a larger guard.
+
+| Switch | When on | When off |
+|---|---|---|
+| `egress-gate` | Outward-effect calls (shell, network, web, MCP writes, persistence writes) are denied or warned on by taint and Rule of Two. | No egress class is checked, except the destructive tier, which has its own switch. |
+| `destructive-tier` | `rm -rf` of roots, home or secret paths, disk wipes and git history rewrites warn, and deny while tainted. | The destructive and history-rewrite classes are not checked. |
+| `taint` | Screened content that scores as injection, a skill load or hidden text marks the session tainted. | Nothing marks the session tainted, and a taint already held is ignored by every gate. |
+| `taint-blocks-egress` | While tainted, each egress class keeps its posture (deny or warn), and a skill load is refused. | A taint alone changes no egress decision; the destructive tier warns as on a clean session. |
+| `rule-of-two` | Tainted plus sensitive access denies every egress class. | Sensitive access never escalates an egress decision. |
+| `skill-load-taints` | Every Skill tool load taints the session. | A skill load does not taint the session. |
+| `spawn-blocked-when-tainted` | A subagent spawn is refused while the session is tainted. | Subagents spawn whatever the taint. |
+| `classifier-gap-needs-ack` | Content Jev could not fully read taints until a person runs `/barmkin-mod-clear-taint`. | Such content taints like any screen hit, and a message clears it. |
+| `outside-cwd-read-taints` | A Read of a file outside the working directory is screened as untrusted content. | Reads outside the working directory are not screened. |
+| `heuristic-only-taint` | The local injection heuristics can taint without a Jev score. | Only a Jev score taints on the injection question. |
+| `consume-own-notifications` | Task notifications and scheduled triggers are screened like peer messages, and can be withheld. | Task notifications and scheduled triggers are delivered unscreened. |
+| `jev-screening` | Jev System One screens untrusted content (needs `OPENROUTER_API_KEY`). | Only the local heuristics screen; no classifier request is sent. |
+| `shadow-screen` | Shadow questions are asked beside the real screen, for contrast only. | No shadow request is sent. |
+| `web-screen` | WebFetch and WebSearch results are screened for injection. | Web results are not screened. |
+| `mcp-guard` | Server allowlist, description hardening and MCP result screening. | No MCP allowlist, description hardening or result screening. |
+| `skill-guard` | Skill bodies and the skill listing are screened. | Skill bodies and the skill listing are not screened. |
+| `skill-shell-mediation` | The inline shell of a skill may not run outward-effect commands or read credential paths. | Inline skill shell is left to the permission layer. |
+| `a2a-firewall` | Inbound agent messages are screened, and withheld on a hit or over 16 KiB. | Inbound messages are delivered unscreened. |
+| `a2a-outbound` | Outbound agent messages over 16 KiB or holding a secret are not sent. | Outbound messages are sent unchecked. |
+| `redaction` | Secrets are redacted in tool results and prompts, with the scan-size limits. | Tool results, prompts and skill bodies pass unredacted and unscrubbed, nothing is withheld for size, and a credential in a result no longer counts as sensitive access. |
+| `posture-check` | Session-start check of version, seating, bypass mode, sandbox, skill shell and MCP allowlist. | No posture line is shown at session start. |
+| `self-protection` | The switch store, the install and marketplace folders, the settings entries of this plugin and its uninstall are guarded. | Those calls are not checked, and an edited switch store is accepted. |
 
 ## How it works
 
@@ -210,6 +252,14 @@ A shadow screen runs next to production for contrast only: the captain's wording
 
 - With Jev configured, the endpoint receives up to about 18,000 characters of redacted untrusted content per screen, in up to five requests, plus two more requests per window for the shadow screen.
 
+**Switches and self-protection**
+
+- Two sessions open at once each write their own values back when the other changes a switch. Change switches in one session at a time, then start the others again.
+- Between sessions the switch store is trusted as written; the session-start log names every switch that is off.
+- Self-protection judges how a path is spelled in the call. It follows the working directory and symbolic links, but not a path assembled from variables or `cd`, nor a configuration folder not named `.claude`.
+- It errs on the side of denying: `rm` or `mv` of any folder named `.claude` (a project one too), a shell command that names barmkin-mod and a settings file even to read it, a settings Write over a file larger than 4 MiB, and an MCP call whose input names a protected path are all denied while it is on.
+- The panel has no keyboard shortcuts, on purpose: a shortcut bound to a row could flip a switch by accident.
+
 **Maintenance**
 
 - Secret rules are a hand-maintained copy of barmkin's. Keep them in sync when barmkin changes.
@@ -229,6 +279,8 @@ hooks/lib/              pure, unit-tested logic
   jev-questions.ts      the frozen classifier questions and their pinned wording
   classifier-windows.ts classifier windows and score merging
   posture.ts            posture checks
+  switches.ts           the switch registry, the store tamper check and the switch command
+  self-protection.ts    guards for the switch store, the install and the settings entries
 tests/                  one test file per lib module, plus integration
 .claude-plugin/         plugin manifest and option schema
 ```
