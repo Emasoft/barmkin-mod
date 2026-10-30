@@ -70,6 +70,19 @@ declare module 'claude-code' {
         }[]
         at: number
       } | null
+
+      // The security switches (hooks/lib/switches.ts) as this session last wrote
+      // or loaded them, one entry per switch id, true = on. Null until loaded
+      // from $.store at session.start (or after /clear, /resume, /branch, which
+      // reset $.state); every gate reads a null as all switches on.
+      switches: { [id: string]: boolean } | null
+      // Fingerprint of the $.store value this session last wrote or loaded: the
+      // tamper check compares the store against it before every write and on
+      // /barmkin-mod-rule and /barmkin-mod-panel.
+      switchesHash: string | null
+      // The last switch notice (a tamper restore, an accepted external value),
+      // shown at the top of the switch panel.
+      switchesNotice: string | null
     }
   }
 }

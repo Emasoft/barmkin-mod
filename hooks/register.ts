@@ -52,7 +52,8 @@ import {
 } from './lib/taint'
 import {
   classifyEgress,
-  decideEgress,
+  decideEgressWith,
+  COMMAND_TOOLS,
   touchesSecretPath,
   isInlineSkillShell,
   inlineShellDenyReason,
@@ -79,6 +80,38 @@ import { extractResultText, appendContext, withholdResult } from './lib/tool-res
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
 import { checkPosture } from './lib/posture'
 import { skillBodyWithheldText, skillListingWithheldText, neutralizeSkillListing } from './lib/skill-guard'
+import {
+  SWITCH_DEFS,
+  SWITCH_STORE_KEY,
+  defaultSwitches,
+  normalizeSwitches,
+  toStoreValue,
+  storeFingerprint,
+  checkStore,
+  parseRuleArgs,
+  originMayChangeSwitches,
+  originKindOf,
+  describeSwitchList,
+  describeSwitchChange,
+  switchesOff,
+  protectionsOff,
+  egressClassEnabled,
+  TAMPER_NOTICE,
+  ACCEPT_NOTICE,
+  type SwitchId,
+  type SwitchMap,
+} from './lib/switches'
+import {
+  shellSelfProtectionReason,
+  fileSelfProtectionReason,
+  isSettingsFile,
+  writeChangesProtectedEntries,
+  isSwitchCommandSkill,
+  inputStrings,
+  SETTINGS_WRITE_REASON,
+  SWITCH_COMMAND_REASON,
+  mcpSelfProtectionReason,
+} from './lib/self-protection'
 
 // ---------------------------------------------------------------------------
 // $.state atoms. Declared values must match types/index.d.ts, and plugin/key
@@ -143,6 +176,13 @@ const shadowBreakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'shadowBrea
 // What the shadow screen answered for the last piece of content. Annotation
 // only: nothing reads it to taint, withhold or gate.
 const lastShadow = atom({ plugin: 'barmkin-mod', key: 'lastShadow' }, null as ShadowRecord | null)
+// The security switches as this session last wrote or loaded them, the
+// fingerprint of that store value (the tamper check), and the last switch
+// notice. One source: every gate and the switch panel read `switches`; a null
+// (not loaded yet, or reset by /clear, /resume, /branch) reads as all on.
+const switchesAtom = atom({ plugin: 'barmkin-mod', key: 'switches' }, null as Record<string, boolean> | null)
+const switchesHashAtom = atom({ plugin: 'barmkin-mod', key: 'switchesHash' }, null as string | null)
+const switchesNoticeAtom = atom({ plugin: 'barmkin-mod', key: 'switchesNotice' }, null as string | null)
 
 // Redaction placeholder counters. Not security state (no secret value is
 // ever kept, only a per-category count for unique labels), so a plain
@@ -335,6 +375,86 @@ function redactInEitherView(text: string): { text: string; redactedCount: number
   return redactInEitherViewLib(text, REDACTION_RULES, redactionCounters)
 }
 
+// ---------------------------------------------------------------------------
+// Security switches (hooks/lib/switches.ts). $.state holds the switches this
+// session uses; $.store keeps them between sessions. Gates read $.state only,
+// so a gate never waits on the store, and a store edit reaches a running
+// session only through the tamper check below.
+// ---------------------------------------------------------------------------
+
+// The switches every gate reads. A null ($.state not loaded yet, or reset by
+// /clear, /resume or /branch) reads as all on: the behaviour the mod had before
+// switches existed, so a missing load can only leave a protection running.
+async function readSwitches($: any): Promise<SwitchMap> {
+  const held = await read($, switchesAtom)
+  return held === null ? defaultSwitches() : normalizeSwitches({ switches: held })
+}
+
+let switchWrites: Promise<unknown> = Promise.resolve()
+
+// Switch reads of the store and switch writes run one at a time, so a panel
+// press and a command cannot interleave between the tamper check and the write.
+function serializeSwitchWrite<T>(write: () => Promise<T>): Promise<T> {
+  const run = switchWrites.then(write)
+  switchWrites = run.catch(() => {})
+  return run
+}
+
+// Shows a switch notice in the transcript, as a toast, and at the top of the panel.
+async function noteSwitches($: any, text: string): Promise<void> {
+  await update($, switchesNoticeAtom, () => text)
+  try {
+    $.ui.log(text)
+  } catch {
+    // no log surface; the panel still shows the notice
+  }
+  try {
+    $.ui.toast(text)
+  } catch {
+    // no toast surface (headless); the log line stands
+  }
+}
+
+// The tamper check over one read of the store (checkStore in switches.ts), with
+// its outcome written: a restore puts this session's last known value back into
+// the store, and every outcome but 'unchanged' records the map and fingerprint
+// in $.state. Returns the switches this session now uses. Runs at session start,
+// after /clear, /resume and /branch, before every switch write, and on
+// /barmkin-mod-rule and /barmkin-mod-panel; never inside a gate.
+async function checkSwitchStoreNow($: any): Promise<SwitchMap> {
+  const stored = await $.store.get(SWITCH_STORE_KEY)
+  const held = await read($, switchesAtom)
+  const known = held === null ? null : normalizeSwitches({ switches: held })
+  const check = checkStore(known, await read($, switchesHashAtom), stored)
+  if (check.kind === 'restore') await $.store.set(SWITCH_STORE_KEY, check.storeValue)
+  if (check.kind !== 'unchanged') {
+    await update($, switchesAtom, () => check.map)
+    await update($, switchesHashAtom, () => check.hash)
+  }
+  if (check.kind === 'restore') await noteSwitches($, TAMPER_NOTICE)
+  if (check.kind === 'accept') await noteSwitches($, ACCEPT_NOTICE)
+  return check.map
+}
+
+function checkSwitchStore($: any): Promise<SwitchMap> {
+  return serializeSwitchWrite(() => checkSwitchStoreNow($))
+}
+
+// Sets one switch (or flips it, for a panel press) and saves the whole map. The
+// tamper check runs first, so a store someone else edited is never the base the
+// change is built on; the new value is this session's map with one switch changed.
+function setSwitch($: any, id: SwitchId, on: boolean | 'toggle'): Promise<SwitchMap> {
+  return serializeSwitchWrite(async () => {
+    const current = await checkSwitchStoreNow($)
+    const changed: SwitchMap = { ...current, [id]: on === 'toggle' ? !current[id] : on }
+    const value = toStoreValue(changed)
+    await $.store.set(SWITCH_STORE_KEY, value)
+    await update($, switchesAtom, () => changed)
+    await update($, switchesHashAtom, () => storeFingerprint(value))
+    return changed
+  })
+}
+
 let taintWrites: Promise<unknown> = Promise.resolve()
 
 // Taint writes run one at a time, in call order, so a fire-and-forget scrub
@@ -347,6 +467,8 @@ function serializeTaintWrite<T>(write: () => Promise<T>): Promise<T> {
 
 function markTainted($: any, reason: string): Promise<void> {
   return serializeTaintWrite(async () => {
+    // The taint switch off: nothing marks the session tainted.
+    if (!(await readSwitches($)).taint) return
     await update($, tainted, () => true)
     await update($, taintReason, (current: string | null) => current ?? reason)
   })
@@ -356,6 +478,7 @@ function markTainted($: any, reason: string): Promise<void> {
 // clears it. The first acknowledgement reason recorded for a session wins.
 function markTaintedNeedingAck($: any, reason: string, ackReason: string): Promise<void> {
   return serializeTaintWrite(async () => {
+    if (!(await readSwitches($)).taint) return
     await update($, tainted, () => true)
     await update($, taintReason, (current: string | null) => current ?? reason)
     await update($, taintAckReason, (current: string | null) => current ?? ackReason)
@@ -369,7 +492,16 @@ function askAgainHint(ackReason: string | null): string {
     : 'Ask the user to run /barmkin-mod-clear-taint to acknowledge it; a new message does not clear this taint.'
 }
 
+// The taint as every gate sees it. With the taint switch off a held taint
+// reads as clear, so no gate acts on it; /barmkin-mod-status and
+// /barmkin-mod-clear-taint read the held values through readHeldTaint.
 async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null; ackReason: string | null }> {
+  const held = await readHeldTaint($)
+  if ((await readSwitches($)).taint) return held
+  return { tainted: false, reason: null, ackReason: null }
+}
+
+async function readHeldTaint($: any): Promise<{ tainted: boolean; reason: string | null; ackReason: string | null }> {
   await taintWrites
   return { tainted: await read($, tainted), reason: await read($, taintReason), ackReason: await read($, taintAckReason) }
 }
@@ -415,13 +547,13 @@ function markSensitive($: any, reason: string): Promise<void> {
 }
 
 async function readLegs($: any): Promise<TrifectaLegs> {
-  await taintWrites
+  const { tainted: untrusted, reason: untrustedReason, ackReason } = await readTaint($)
   return {
-    untrusted: await read($, tainted),
-    untrustedReason: await read($, taintReason),
+    untrusted,
+    untrustedReason,
     sensitive: await read($, sensitiveAccess),
     sensitiveReason: await read($, sensitiveReason),
-    ackRequired: (await read($, taintAckReason)) !== null,
+    ackRequired: ackReason !== null,
   }
 }
 
@@ -435,7 +567,15 @@ async function noteSensitiveAccess($: any, call: EgressCall): Promise<void> {
 // warn is recorded for the status surface. Never answers allow.
 async function egressGate($: any, call: EgressCall): Promise<EgressVerdict> {
   await noteSensitiveAccess($, call)
-  const verdict = decideEgress(classifyEgress(call), await readLegs($))
+  const sw = await readSwitches($)
+  // A class whose switch is off is not checked, and an escalation whose switch
+  // is off is decided as if its leg were not held: off drops a check, it never
+  // answers allow, so another guard's deny still stands.
+  const classes = classifyEgress(call).filter((c) => egressClassEnabled(c.id, sw))
+  const verdict = decideEgressWith(classes, await readLegs($), {
+    taintBlocksEgress: sw['taint-blocks-egress'],
+    ruleOfTwo: sw['rule-of-two'],
+  })
   if (verdict.kind !== 'pass') {
     await update($, lastEgress, () => ({
       tool: call.tool,
@@ -597,18 +737,23 @@ async function screenContent(
   const jev = getJevOptions(pluginOptions, await readOpenRouterKey($))
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
-  const canUseJev = jevConfigured(jev) && breakerUntil <= now
+  const sw = await readSwitches($)
+  // The jev-screening switch off: no classifier request is sent, and the screen
+  // runs as if Jev were not configured (local heuristics only).
+  const jevOn = jevConfigured(jev) && sw['jev-screening']
+  const canUseJev = jevOn && breakerUntil <= now
 
   const local: ScoreSource = {
     model: 'heuristic',
-    injection: heuristicInjectionScore(text),
+    // The heuristic-only-taint switch off: only a Jev score counts on the injection question.
+    injection: sw['heuristic-only-taint'] ? heuristicInjectionScore(text) : 0,
     credentials: containsSecretInEitherView(raw, REDACTION_RULES) ? 0.9 : 0,
   }
 
   // What the classifier would be sent, cut into its windows. Computed whenever
-  // Jev is configured (even with the breaker open) to tell how much of the
+  // Jev is configured and switched on (even with the breaker open) to tell how much of the
   // content was classified.
-  const jevInput = jevConfigured(jev) ? classifierInput(raw, REDACTION_RULES, redactionCounters) : null
+  const jevInput = jevOn ? classifierInput(raw, REDACTION_RULES, redactionCounters) : null
   const plan = jevInput === null ? null : planWindows(jevInput)
   let results: (SystemOneParseResult | null)[] = plan ? plan.windows.map(() => null) : []
   let shadowNote: string | null = null
@@ -619,10 +764,11 @@ async function screenContent(
     // own questions, in parallel with the production calls, so it adds no wall
     // time. Its own breaker gates it, and nothing it returns reaches the
     // decision below.
-    const shadowOpen = (await read($, shadowBreakerOpenUntil)) > now
+    // Skipped while its breaker is open, and always with the shadow-screen switch off.
+    const skipShadow = !sw['shadow-screen'] || (await read($, shadowBreakerOpenUntil)) > now
     const [production, shadow] = await Promise.all([
       classifyWindows($, jev, jevInput, plan.windows),
-      shadowOpen ? Promise.resolve(null) : classifyShadowWindows($, jev, jevInput, plan.windows),
+      skipShadow ? Promise.resolve(null) : classifyShadowWindows($, jev, jevInput, plan.windows),
     ])
     results = production
     // One breaker event per screen, however many windows it took.
@@ -647,7 +793,7 @@ async function screenContent(
   const unclassified =
     plan && jevInput !== null ? unclassifiedChars(jevInput.length, plan.windows, results.map((r) => r?.ok === true)) : 0
   const gap =
-    screened.decision === 'deny' ? null : classifierGapReason(jevConfigured(jev), jevInput === null ? null : jevInput.length, unclassified)
+    screened.decision === 'deny' ? null : classifierGapReason(jevOn, jevInput === null ? null : jevInput.length, unclassified)
   const composed: ScreenResult = gap
     ? { ...screened, tainted: true, decision: 'escalate', reason: screened.tainted ? screened.reason : gap }
     : screened
@@ -661,7 +807,9 @@ async function screenContent(
     at: now,
   }))
 
-  if (gap) await markTaintedNeedingAck($, composed.reason, gap)
+  // The classifier-gap-needs-ack switch off: a gap taints like any screen hit,
+  // and a message clears it.
+  if (gap && sw['classifier-gap-needs-ack']) await markTaintedNeedingAck($, composed.reason, gap)
   else if (composed.tainted) await markTainted($, composed.reason)
   // Leg B follows the credentials score itself, not the question that drove the
   // decision: content that scores on injection and on credentials leaks the
@@ -688,12 +836,82 @@ async function screenContent(
 }
 
 // ---------------------------------------------------------------------------
-// session.start: version check, register commands.
+// session.start: load the switches, posture check, open the switch panel, register commands.
 // ---------------------------------------------------------------------------
 
 async function sessionStartHook($: any, e: any, next: any) {
-  const statusLines: string[] = []
+  // The switches load first, so every gate reads them from here on. A store
+  // that cannot be read leaves $.state null, which every gate reads as all on.
+  let sw = defaultSwitches()
+  try {
+    sw = await checkSwitchStore($)
+  } catch {
+    logLine($, 'barmkin-mod: could not read the switch store, so every switch is on for this session')
+  }
+  // A switch turned off in an earlier session, or in the store file between
+  // sessions, is named here, so it never goes unseen.
+  const off = switchesOff(sw)
+  if (off.length > 0) logLine($, 'barmkin-mod: these switches are off: ' + off.join(', ') + ' (/barmkin-mod-panel to change them)')
 
+  if (sw['posture-check']) {
+    for (const line of await postureLines($)) logLine($, line)
+  }
+
+  // The switch panel opens unasked and without focus, so it never takes the
+  // person's keystrokes; the surface places it only where there is room (a
+  // wide terminal, or the Desktop app) and keeps it waiting otherwise.
+  try {
+    await $.ui.open({ id: SWITCH_PANE_ID, title: SWITCH_PANE_TITLE, rows: SWITCH_PANE_ROWS })
+  } catch {
+    // no pane surface (headless); /barmkin-mod-rule still lists and sets switches
+  }
+
+  // Commands register last, each on its own, so one name collision costs only
+  // that command. Literal calls, so the validator sees which commands are ours.
+  try {
+    await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
+  } catch {
+    // the name collided with another plugin's command; the mod still works
+  }
+  try {
+    await $.command.register({
+      name: 'barmkin-mod-clear-taint',
+      description: 'Clear the barmkin-mod taint and sensitive-access flags and re-enable egress',
+    })
+  } catch {
+    // as above
+  }
+  try {
+    await $.command.register({
+      name: 'barmkin-mod-rule',
+      description: 'List the barmkin-mod security switches, or turn one on or off',
+      argumentHint: '[list | <id> on|off]',
+      immediate: true,
+    })
+  } catch {
+    // as above
+  }
+  try {
+    await $.command.register({ name: 'barmkin-mod-panel', description: 'Open the barmkin-mod security switch panel', immediate: true })
+  } catch {
+    // as above
+  }
+  return next(e)
+}
+
+// $.ui.status holds one line per plugin and draws a newline as U+FFFD, so each
+// line is its own transcript row via $.ui.log.
+function logLine($: any, line: string): void {
+  try {
+    $.ui.log(line)
+  } catch {
+    // no log surface on this build
+  }
+}
+
+// The posture-check switch's lines: the Claude Code version and checkPosture's warnings.
+async function postureLines($: any): Promise<string[]> {
+  const statusLines: string[] = []
   try {
     const version = await $.session.version()
     if (typeof version === 'string' && !meetsMinimumVersion(version)) {
@@ -723,27 +941,14 @@ async function sessionStartHook($: any, e: any, next: any) {
   for (const warning of checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)) {
     statusLines.push('barmkin-mod posture: ' + warning)
   }
-
-  // $.ui.status holds one line per plugin and draws a newline as U+FFFD, so each warning is its own transcript row via $.ui.log.
-  for (const line of statusLines) {
-    try {
-      $.ui.log(line)
-    } catch {
-      // no log surface on this build; the commands below still register
-    }
-  }
-
-  try {
-    await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
-    await $.command.register({
-      name: 'barmkin-mod-clear-taint',
-      description: 'Clear the barmkin-mod taint and sensitive-access flags and re-enable egress',
-    })
-  } catch {
-    // a command name collided with another plugin; the mod still works
-  }
-  return next(e)
+  return statusLines
 }
+
+const SWITCH_PANE_ID = 'barmkin-mod-switches'
+const SWITCH_PANE_TITLE = 'Barmkin switches'
+// One row per switch plus the header and notice rows, so the whole list fits
+// and Up and Down move between switches instead of scrolling.
+const SWITCH_PANE_ROWS = SWITCH_DEFS.length + 4
 
 // ---------------------------------------------------------------------------
 // prompt.submit: redact secrets the user pasted, clear taint when a human sent it.
@@ -758,6 +963,7 @@ async function promptSubmitHook($: any, e: any, next: any) {
   }
 
   if (typeof e.text !== 'string') return next(e)
+  if (!(await readSwitches($)).redaction) return next(e)
   if (exceedsScreenedLimit(e.text)) {
     return { drop: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
@@ -793,6 +999,7 @@ async function sessionEndHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function toolDescribeHook($: any, e: any, next: any) {
+  if (!(await readSwitches($))['mcp-guard']) return next(e)
   const current = await next(e)
   const description = typeof current?.description === 'string' ? current.description : e.description
   if (typeof description !== 'string') return current
@@ -818,7 +1025,10 @@ function withheldMessage(what: string, reason: string): string {
 
 async function mcpGuardHook($: any, e: any, next: any) {
   const serverName = parseMcpServerName(e.tool)
-  if (serverName) {
+  // The mcp-guard switch off: no allowlist and no result screen. The egress
+  // gate still runs, under its own switches.
+  const guard = (await readSwitches($))['mcp-guard']
+  if (guard && serverName) {
     const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
     if (!isAllowedServer(serverName, allowlist)) {
       return { deny: 'barmkin-mod: MCP server "' + serverName + '" is not on the allowlist' }
@@ -829,7 +1039,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (egress.kind === 'deny') return { deny: egress.message }
 
   const result = await next(e)
-  if (!result || result.deny || result.isError) return result
+  if (!guard || !result || result.deny || result.isError) return result
 
   const text = extractResultText(result)
   if (!text) return result
@@ -879,8 +1089,15 @@ async function toolCheckGuardHook($: any, e: any, next: any) {
   const input = e.input && typeof e.input === 'object' ? (e.input as Record<string, unknown>) : null
   if (!input || typeof input.command !== 'string') return decided
 
+  const sw = await readSwitches($)
+  // Self-protection here too: a skill's inline shell never reaches the
+  // tool.call guard, and a command rewritten after it is judged again.
+  if (sw['self-protection']) {
+    const protectedReason = shellSelfProtectionReason(input.command)
+    if (protectedReason) return { decision: 'deny', reason: protectedReason }
+  }
   const call: EgressCall = { tool: e.tool, input }
-  if (isInlineSkillShell(e.tool_use_id)) {
+  if (sw['skill-shell-mediation'] && isInlineSkillShell(e.tool_use_id)) {
     const reason = inlineShellDenyReason(call)
     if (reason) return { decision: 'deny', reason }
   }
@@ -896,6 +1113,7 @@ async function toolCheckGuardCatch($: any, e: any, next: any) {
 }
 
 async function webFetchTaintHook($: any, e: any, next: any) {
+  if (!(await readSwitches($))['web-screen']) return next(e)
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
   const text = extractResultText(result)
@@ -909,10 +1127,12 @@ async function webFetchTaintHook($: any, e: any, next: any) {
 }
 
 async function readTaintHook($: any, e: any, next: any) {
+  // Leg B is noted whatever the switch: only the screen below is switchable.
+  const screens = (await readSwitches($))['outside-cwd-read-taints']
   await noteSensitiveAccess($, { tool: e.tool, input: e })
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
-  if (typeof e.file_path !== 'string') return result
+  if (!screens || typeof e.file_path !== 'string') return result
 
   let cwd = ''
   try {
@@ -999,6 +1219,7 @@ async function screenedSurface($: any, e: any): Promise<boolean> {
 }
 
 async function redactionHook($: any, e: any, next: any) {
+  if (!(await readSwitches($)).redaction) return next(e)
   const result = await next(e)
   if (!result || result.deny) return result
   // Within the screened limits nothing depends on which tool this is. Over them,
@@ -1123,6 +1344,11 @@ async function redactionCatch($: any, e: any, next: any) {
 
 async function sessionReceiveHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string' || e.text.length === 0) return next(e)
+  const sw = await readSwitches($)
+  if (!sw['a2a-firewall']) return next(e)
+  // A task notification or a scheduled trigger is this session's own work coming back.
+  const kind = e.origin?.kind
+  if ((kind === 'task-notification' || kind === 'scheduled-trigger') && !sw['consume-own-notifications']) return next(e)
 
   const scrubbed = scrubInvisible(e.text)
   void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
@@ -1142,6 +1368,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 }
 
 async function sessionSendHook($: any, e: any, next: any) {
+  if (!(await readSwitches($))['a2a-outbound']) return next(e)
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScreenedLimit(e.text)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
@@ -1158,6 +1385,7 @@ async function sessionSendCatch($: any, e: any, next: any) {
 }
 
 async function agentSpawnHook($: any, e: any, next: any) {
+  if (!(await readSwitches($))['spawn-blocked-when-tainted']) return next(e)
   const { tainted: isTainted, reason, ackReason } = await readTaint($)
   if (isTainted) {
     return {
@@ -1191,11 +1419,18 @@ async function skillPromptHook($: any, e: any, next: any) {
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
 
-  void taintForScrub($, scrubInvisible(text).hiddenCount, 'a skill body')
-  const verdict = await screenContent($, text, 'skill:' + e.skill, undefined)
-  if (verdict.decision === 'deny') {
-    return { ...(current ?? e), text: skillBodyWithheldText(verdict.withholdReason) }
+  const sw = await readSwitches($)
+  let tainted = false
+  if (sw['skill-guard']) {
+    void taintForScrub($, scrubInvisible(text).hiddenCount, 'a skill body')
+    const verdict = await screenContent($, text, 'skill:' + e.skill, undefined)
+    if (verdict.decision === 'deny') {
+      return { ...(current ?? e), text: skillBodyWithheldText(verdict.withholdReason) }
+    }
+    tainted = verdict.tainted
   }
+  const warned = (body: string) => (tainted ? body + '\n\n' + UNTRUSTED_CONTENT_WARNING : body)
+  if (!sw.redaction) return tainted ? { ...(current ?? e), text: warned(text) } : current ?? e
 
   const { text: redacted, redactedCount } = redactInEitherView(text)
   if (redacted === WITHHELD_TEXT) {
@@ -1204,8 +1439,7 @@ async function skillPromptHook($: any, e: any, next: any) {
   if (redactedCount > 0) {
     $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from skill ' + e.skill)
   }
-  const body = verdict.tainted ? redacted + '\n\n' + UNTRUSTED_CONTENT_WARNING : redacted
-  return { ...(current ?? e), text: body }
+  return { ...(current ?? e), text: warned(redacted) }
 }
 
 async function skillPromptCatch($: any, e: any, next: any) {
@@ -1217,6 +1451,7 @@ async function skillPromptCatch($: any, e: any, next: any) {
 // only, so other attachments never reach it or its catch. The dispatcher honours
 // a rewritten `text` and rejects a change to `type`, `origin`, `agentId` or `detail`.
 async function skillListingHook($: any, e: any, next: any) {
+  if (!(await readSwitches($))['skill-guard']) return next(e)
   const current = await next(e)
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
@@ -1239,8 +1474,17 @@ async function skillListingCatch($: any, e: any, next: any) {
 // denial, so a failed or denied load leaves the session tainted.
 async function skillToolGuardHook($: any, e: any, next: any) {
   const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
-  const standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
-  if (standing) {
+  const sw = await readSwitches($)
+  let standing: { standingReason: string | null; ackReason: string | null } | null = null
+  if (sw.taint && sw['skill-load-taints']) {
+    standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
+  } else {
+    // The load does not taint, but a session already tainted still refuses it.
+    const held = await readTaint($)
+    if (held.tainted) standing = { standingReason: held.reason, ackReason: held.ackReason }
+  }
+  // The taint-blocks-egress switch off: a taint alone refuses no skill load.
+  if (standing && sw['taint-blocks-egress']) {
     await update($, lastEgress, () => ({ tool: 'Skill', classIds: ['skill-load'], decision: 'deny' as const, rule: 'untrusted', at: Date.now() }))
     return {
       deny:
@@ -1272,14 +1516,20 @@ const TAINT_COLOR = 'error'
 const CLEAR_ACTIVE = { color: 'success', label: '🏰 Barmkin session guard active' }
 const CLEAR_DEGRADED = { color: 'warning', label: '🏰 Barmkin session guard degraded' }
 
-function clearLabelFor(breakerOpen: boolean, jev: JevOptions) {
-  return jevConfigured(jev) && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
+// Green needs every protection switch on as well: a session with one switched
+// off is not the guarded session the green label claims.
+// `jevOn`: Jev configured and its switch on. Green also needs every protection
+// switch on: a session with one switched off is not the guarded session the
+// green label claims.
+function clearLabelFor(breakerOpen: boolean, jevOn: boolean, sw: SwitchMap) {
+  return jevOn && !breakerOpen && protectionsOff(sw).length === 0 ? CLEAR_ACTIVE : CLEAR_DEGRADED
 }
 
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted, ackReason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
   const verdict = await read($, lastVerdict)
+  const off = protectionsOff(await readSwitches($))
 
   const { Box, Text } = $.ui.resolve(e)
   const breakerUntil = await read($, breakerOpenUntil)
@@ -1301,12 +1551,18 @@ async function hudHook($: any, e: any, next: any) {
     })
   }
 
+  // One amber line naming every protection that is switched off, for as long as one is.
+  const offLine =
+    off.length > 0
+      ? Text({ key: 'barmkin-mod-off', color: 'warning', children: ['barmkin-mod: switched off: ' + off.join(', ') + ' (/barmkin-mod-panel)'] })
+      : null
+
   // next(e) may resolve to nothing if no other mod draws in the band, so
   // filter out a falsy child rather than assume an engine placeholder.
   // The state line below appears only when there is state to report.
   const stateLine = isTainted || isSensitive || verdict ? Text({ children: [parts.join(' · ')] }) : null
   const theirs = await next(e)
-  return Box({ flexDirection: 'column', children: [theirs, banner, stateLine].filter(Boolean) })
+  return Box({ flexDirection: 'column', children: [theirs, banner, offLine, stateLine].filter(Boolean) })
 }
 
 // The clear-session label draws as a second child of the PromptHint footer,
@@ -1319,14 +1575,18 @@ async function hintHook($: any, e: any, next: any) {
   if (isTainted) return theirs
   const { Box, Text } = $.ui.resolve(e)
   const breakerUntil = await read($, breakerOpenUntil)
-  const clear = clearLabelFor(breakerUntil > Date.now(), getJevOptions(pluginOptions, await readOpenRouterKey($)))
+  const sw = await readSwitches($)
+  // The jev-screening switch off reads as Jev not configured, as the screen does.
+  const jevOn = jevConfigured(getJevOptions(pluginOptions, await readOpenRouterKey($))) && sw['jev-screening']
+  const clear = clearLabelFor(breakerUntil > Date.now(), jevOn, sw)
   const label = Text({ key: 'barmkin-mod-active', color: clear.color, children: [clear.label] })
   return Box({ flexDirection: 'column', children: [theirs, label].filter(Boolean) })
 }
 
 async function clearTaintCommandHook($: any, e: any) {
   const posture = taintClearPosture()
-  const { ackReason } = await readTaint($)
+  // What is held, whatever the taint switch: the command clears the held values.
+  const { ackReason } = await readHeldTaint($)
   if (!commandMayClearTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true, ackReason !== null)) {
     return { text: 'barmkin-mod: taint posture is ' + posture + '; /barmkin-mod-clear-taint was not run from a person\'s prompt, so nothing was cleared.' }
   }
@@ -1335,7 +1595,9 @@ async function clearTaintCommandHook($: any, e: any) {
 }
 
 async function statusCommandHook($: any) {
-  const { tainted: isTainted, reason, ackReason } = await readTaint($)
+  const { tainted: isTainted, reason, ackReason } = await readHeldTaint($)
+  const sw = await readSwitches($)
+  const taintCounts = isTainted && sw.taint
   const isSensitive = await read($, sensitiveAccess)
   const sensitiveWhy = await read($, sensitiveReason)
   const egress = await read($, lastEgress)
@@ -1343,16 +1605,24 @@ async function statusCommandHook($: any) {
   const breakerUntil = await read($, breakerOpenUntil)
   const shadow = await read($, lastShadow)
   const shadowBreakerUntil = await read($, shadowBreakerOpenUntil)
+  const off = switchesOff(sw)
   const lines = [
     'barmkin-mod status',
+    'switches: ' + (off.length === 0 ? 'all on' : 'off: ' + off.join(', ') + ' (/barmkin-mod-panel or /barmkin-mod-rule <id> on)'),
     'taint clear posture: ' + taintClearPosture(),
-    'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' : 'off'),
+    'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' + (sw.taint ? '' : ', ignored: the taint switch is off') : 'off'),
     ...(ackReason !== null
       ? ['acknowledgement required: ' + ackReason + '; run /barmkin-mod-clear-taint (a message, /clear or /compact does not clear it)']
       : []),
     'sensitive access: ' + (isSensitive ? 'ON (' + (sensitiveWhy ?? 'unspecified') + ')' : 'off'),
     'egress: ' +
-      (isTainted && isSensitive ? 'all classes denied (Rule of Two)' : isTainted ? 'gated per class (taint)' : 'open') +
+      (!sw['egress-gate']
+        ? 'egress gate switched off'
+        : taintCounts && isSensitive && sw['rule-of-two']
+          ? 'all classes denied (Rule of Two)'
+          : taintCounts && sw['taint-blocks-egress']
+            ? 'gated per class (taint)'
+            : 'open') +
       (egress ? '; last ' + egress.decision + ': ' + egress.classIds.join(', ') + ' via ' + egress.tool + ' (' + egress.rule + ')' : ''),
     'classifier breaker: ' + (breakerUntil > Date.now() ? 'open (degraded, using heuristics)' : 'closed'),
     verdict
@@ -1366,6 +1636,182 @@ async function statusCommandHook($: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-protection: deny only. A call it does not recognise goes on to every
+// other guard (hooks/lib/self-protection.ts names what it recognises).
+// ---------------------------------------------------------------------------
+
+const FILE_TOOLS: readonly string[] = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
+
+function isAbsoluteSpelling(path: string): boolean {
+  return path.startsWith('/') || path.startsWith('~') || /^[A-Za-z]:[\\/]/.test(path)
+}
+
+// Every spelling a file tool's target is judged under: as written; against the
+// working directory when relative; and where it leads through a symbolic link
+// (the file's, or for a file not there yet its folder's). A lookup that fails
+// drops only its own spelling: the written path is always judged.
+async function targetSpellings($: any, raw: string): Promise<string[]> {
+  const spellings = [raw]
+  if (!isAbsoluteSpelling(raw)) {
+    try {
+      const cwd = await $.session.cwd()
+      if (typeof cwd === 'string' && cwd !== '') spellings.push(cwd.replace(/[\\/]+$/, '') + '/' + raw)
+    } catch {
+      // no working directory to resolve against
+    }
+  }
+  const cut = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'))
+  const probes: [string, string][] = [[raw, '']]
+  if (cut > 0) probes.push([raw.slice(0, cut), raw.slice(cut)])
+  for (const [probe, rest] of probes) {
+    try {
+      const stat = await $.fs.stat(probe, { resolve: true })
+      if (typeof stat?.realPath === 'string') {
+        spellings.push(stat.realPath + rest)
+        break
+      }
+    } catch {
+      // not there (yet), or not resolvable
+    }
+  }
+  return spellings
+}
+
+// The current text of a settings file a Write would replace, or null when there
+// is none. A read that fails throws, so the hook's catch denies the write.
+async function currentText($: any, path: string): Promise<string | null> {
+  if (!(await $.fs.exists(path))) return null
+  return await $.fs.read(path)
+}
+
+async function selfProtectionReason($: any, e: any): Promise<string | null> {
+  const tool = typeof e.tool === 'string' ? e.tool : ''
+  if (COMMAND_TOOLS.includes(tool)) return typeof e.command === 'string' ? shellSelfProtectionReason(e.command) : null
+  if (tool === 'Skill') return isSwitchCommandSkill(e.skill) ? SWITCH_COMMAND_REASON : null
+  if (FILE_TOOLS.includes(tool)) {
+    const raw = typeof e.file_path === 'string' ? e.file_path : typeof e.notebook_path === 'string' ? e.notebook_path : null
+    if (raw === null) return null
+    const spellings = await targetSpellings($, raw)
+    for (const path of spellings) {
+      const reason = fileSelfProtectionReason(tool, e, path)
+      if (reason) return reason
+    }
+    // A Write replaces the whole file, so whether it changes this plugin's
+    // settings entries is told against the text it replaces.
+    if (tool === 'Write' && spellings.some((p) => isSettingsFile(p)) && typeof e.content === 'string') {
+      if (writeChangesProtectedEntries(await currentText($, raw), e.content)) return SETTINGS_WRITE_REASON
+    }
+    return null
+  }
+  if (/^mcp__/.test(tool)) return mcpSelfProtectionReason(inputStrings(e))
+  return null
+}
+
+async function selfProtectionHook($: any, e: any, next: any) {
+  if ((await readSwitches($))['self-protection']) {
+    const reason = await selfProtectionReason($, e)
+    if (reason) return { deny: reason }
+  }
+  return next(e)
+}
+
+async function selfProtectionCatch($: any, e: any, next: any) {
+  return { deny: 'barmkin-mod: the self-protection guard failed (' + next.error.kind + '), so this call was not run' }
+}
+
+// ---------------------------------------------------------------------------
+// The switch command, the switch panel, and the reload after /clear, /resume
+// and /branch (which reset $.state, so the switches are read back from the store).
+// ---------------------------------------------------------------------------
+
+async function ruleCommandHook($: any, e: any) {
+  const request = parseRuleArgs(e.args)
+  if (request.kind === 'error') return { text: request.message }
+  try {
+    if (request.kind === 'list') return { text: describeSwitchList(await checkSwitchStore($)) }
+    // Only the person changes a switch: their own Enter, or the Remote Control
+    // bridge. A plugin's run (even asUser), the SDK, a notification, a schedule
+    // or a peer is refused, so no model or code path turns a protection off.
+    if (!originMayChangeSwitches(e.origin)) {
+      return {
+        text:
+          'barmkin-mod: no switch was changed: /barmkin-mod-rule came from ' +
+          originKindOf(e.origin) +
+          ', not from your own prompt. Run it yourself, or use /barmkin-mod-panel.',
+      }
+    }
+    const map = await setSwitch($, request.id, request.on)
+    return { text: describeSwitchChange(request.id, map[request.id]) }
+  } catch (error) {
+    return { text: 'barmkin-mod: the switch store could not be read or written (' + String(error) + '), so no switch was changed.' }
+  }
+}
+
+async function panelCommandHook($: any) {
+  try {
+    await checkSwitchStore($)
+  } catch {
+    // the panel still opens, with the switches this session holds
+  }
+  await $.ui.open({ id: SWITCH_PANE_ID, title: SWITCH_PANE_TITLE, rows: SWITCH_PANE_ROWS, focus: true, closeOnEscape: true })
+  return {}
+}
+
+// Descriptions show beside the switches only where they have room.
+const SWITCH_PANE_WIDE_COLUMNS = 72
+const SWITCH_ID_WIDTH = Math.max(...SWITCH_DEFS.map((d) => d.id.length))
+
+// The switch panel: one button per switch, flipped by a click or by Enter on
+// the focused row (Tab, Up and Down move between rows). No hotkeys: one stray
+// key would turn a protection off. One render path for every surface.
+async function switchPaneHook($: any, e: any, next: any) {
+  if (e.requestId !== SWITCH_PANE_ID) return next(e)
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const sw = await readSwitches($)
+  const notice = await read($, switchesNoticeAtom)
+  const off = switchesOff(sw)
+  const wide = (e.props?.bodyColumns ?? 0) >= SWITCH_PANE_WIDE_COLUMNS
+  const rows = SWITCH_DEFS.map((def) => {
+    const on = sw[def.id]
+    const button = Button({
+      key: 'switch-' + def.id,
+      label: (on ? '✓ on  ' : '✗ OFF ') + def.id.padEnd(SWITCH_ID_WIDTH),
+      plain: true,
+      onPress: () => {
+        void setSwitch($, def.id, 'toggle').catch((error: unknown) =>
+          noteSwitches($, 'barmkin-mod: the ' + def.id + ' switch could not be saved (' + String(error) + '), so it is unchanged.'),
+        )
+      },
+    })
+    if (!wide) return Box({ key: 'row-' + def.id, children: [button] })
+    return Box({
+      key: 'row-' + def.id,
+      flexDirection: 'row',
+      columnGap: 1,
+      children: [button, Text({ dimColor: true, wrap: 'truncate-end', children: [def.description] })],
+    })
+  })
+  return Box({
+    flexDirection: 'column',
+    children: [
+      Text({ key: 'header', bold: true, children: ['Barmkin security switches · ' + (off.length === 0 ? 'all on' : off.length + ' off')] }),
+      Text({ key: 'help', dimColor: true, wrap: 'wrap', children: ['A click, or Enter on a row, flips that switch.'] }),
+      notice ? Text({ key: 'notice', color: 'warning', wrap: 'wrap', children: [notice] }) : null,
+      ...rows,
+    ].filter(Boolean),
+  })
+}
+
+async function sessionResetHook($: any, e: any, next: any) {
+  try {
+    await checkSwitchStore($)
+  } catch {
+    logLine($, 'barmkin-mod: could not read the switch store; the switches this session holds stay in force (all on if it holds none)')
+  }
+  return next(e)
+}
+
+// ---------------------------------------------------------------------------
 // Registration. Order matters for tool.call: the first hook registered is
 // outermost (sees the result last), so redaction is registered first to
 // redact whatever every other hook below it produced.
@@ -1375,12 +1821,20 @@ export function register(on: any, options: Record<string, unknown>) {
   pluginOptions = options ?? {}
 
   on('session.start', sessionStartHook)
+  // /clear, /resume and /branch reset $.state; the switches are read back from the store.
+  on('classic.SessionStart', sessionResetHook)
   on('prompt.submit', promptSubmitHook)
   on('session.compact', compactHook)
   on('session.end', sessionEndHook)
   on('tool.describe', { tool: /^mcp__/ }, toolDescribeHook)
 
   on('tool.call', redactionHook).catch(redactionCatch)
+  // Second outermost: a self-protection deny answers before any other guard
+  // runs, and before skillToolGuardHook reserves a taint for the load.
+  on('tool.call', { tool: ['Bash', 'PowerShell', 'Monitor', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Skill'] }, selfProtectionHook).catch(
+    selfProtectionCatch,
+  )
+  on('tool.call', { tool: /^mcp__/ }, selfProtectionHook).catch(selfProtectionCatch)
   on('tool.call', { tool: /^mcp__/ }, mcpGuardHook).catch(mcpGuardCatch)
   on('tool.call', { tool: ['Bash', 'PowerShell', 'WebFetch', 'WebSearch', 'Monitor', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, egressGuardHook).catch(egressGuardCatch)
   on('tool.call', { tool: ['WebFetch', 'WebSearch'] }, webFetchTaintHook).catch(taintScreenCatch)
@@ -1397,6 +1851,9 @@ export function register(on: any, options: Record<string, unknown>) {
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
   on('ui.render', { component: 'PromptHint' }, hintHook)
+  on('ui.render', { component: 'Pane' }, switchPaneHook)
   on('command.run', { command: 'barmkin-mod-status' }, statusCommandHook)
   on('command.run', { command: 'barmkin-mod-clear-taint' }, clearTaintCommandHook)
+  on('command.run', { command: 'barmkin-mod-rule' }, ruleCommandHook)
+  on('command.run', { command: 'barmkin-mod-panel' }, panelCommandHook)
 }

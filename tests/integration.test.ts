@@ -488,6 +488,8 @@ test('persistence class: a write to a persistence surface warns while tainted, a
 
 test('persistence class: a write to a persistence surface is silent on a clean session', async ($, on) => {
   on('tool.call', () => ({ result: 'ok' }))
+  // Self-protection reads the settings file a Write replaces; here there is none.
+  on('fs.exists', () => ({ value: false }))
   const out = await $.tool.call({ tool: 'Write', file_path: '/proj/.claude/settings.json', content: '{}' })
   expect(out.deny).toBeUndefined()
   expect(out.context ?? []).toEqual([])
