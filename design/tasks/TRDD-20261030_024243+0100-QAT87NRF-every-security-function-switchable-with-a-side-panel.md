@@ -1,10 +1,10 @@
 ---
 trdd-id: QAT87NRF
 title: Every security function switchable, with a side panel
-column: dev
+column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-10-30T02:42:43+0100
+updated: 2026-10-30T03:38:59+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -16,6 +16,7 @@ approved: true
 approval-judge: main-agent@barmkin-mod
 approval-datetime: 2026-10-30T02:42:43+0100
 release-via: none
+implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e]
 ---
 
 # Every security function switchable, with a side panel
@@ -47,16 +48,21 @@ Every security function barmkin-mod has today gets its own named switch, on by d
 
 - Every session of a user shares one `$.store`. A switch changed in another running session is, to this session, indistinguishable from an external edit: this session keeps its own values and writes them back when it next checks. A fresh session has no earlier hash, so a store edited while no session ran is accepted as it is.
 - Self-protection reads the command text: a path assembled from pieces (a `cd` first, a variable, an encoding) is not recognised. The tamper check is the second line for the store file.
+- Found in step 1, live check on Claude Code 2.1.314: Claude Code places a pane nobody asked for only at 144 columns or more ("waits unplaced (unasked below 144 columns ...)"), so in a narrower terminal the panel opens at session start only once widened or on /barmkin-mod-panel.
+- Found in step 1: in an 80x30 terminal the 26-row list does not fit, so Up and Down scroll the pane; Tab moves from row to row and Enter flips the focused row. With the panel open there, the amber "switched off" line was not on screen.
+- Found in step 1: the harness itself refuses a Skill tool call of /barmkin-mod-rule ("a built-in CLI command, not a skill"), so the origin check in the command is reached by a person or by a child session; a headless `claude -p "/barmkin-mod-rule ..."` arrives with origin sdk and is refused.
+- Found in step 1: self-protection errs toward denying. Denied while it is on: rm or mv of any folder named .claude (a project one too), a shell command naming barmkin-mod and a settings file even to read it, a settings Write over a file larger than 4 MiB, and an MCP call whose input names a protected path. Not covered: mv or rm of settings.json or installed_plugins.json without naming the plugin, and a configuration folder not named .claude.
+- Found in step 1: command replies show the plugin name twice ("barmkin-mod: barmkin-mod: ..."), because Claude Code prefixes the plugin name and the texts start with it too, as the 0.2.2 status and clear-taint texts already did. Cosmetic, left for a later card.
 
 ## Acceptance
 
-- [ ] Every existing gate checks its own switch; off skips only that check.
-- [ ] Switches persist in `$.store`; tamper check restores and notices.
-- [ ] Only composer or bridge origins change a switch from the command; the model cannot change one through the Skill tool or any other tool call.
+- [x] Every existing gate checks its own switch; off skips only that check.
+- [x] Switches persist in `$.store`; tamper check restores and notices.
+- [x] Only composer or bridge origins change a switch from the command; the model cannot change one through the Skill tool or any other tool call.
 - [ ] Panel lists every switch and toggles on click and Enter, on terminal and desktop, narrow and wide.
-- [ ] Self-protection denies the listed targets.
-- [ ] `claude plugin validate --strict` and `claude plugin test` pass with OPENROUTER_API_KEY unset and set to a placeholder.
-- [ ] README updated, version 0.3.0.
+- [x] Self-protection denies the listed targets.
+- [x] `claude plugin validate --strict` and `claude plugin test` pass with OPENROUTER_API_KEY unset and set to a placeholder.
+- [x] README updated, version 0.3.0.
 
 ## Approval log
 
