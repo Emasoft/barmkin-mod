@@ -121,17 +121,13 @@ function fold(path: string): string {
   return path.replace(/\\/g, '/').toLowerCase()
 }
 
-// A shell command folded for comparison: every word lower-cased except the letters
-// of an option (a word that starts with -), whose case can change what the command
-// does: cp -L copies through a link and cp -l makes one; yq -I sets the indent and
-// yq -i edits in place (Greptile on PR #1). The value after an option's = is folded
-// like any other word.
+// A shell command folded for comparison: every word lower-cased except an option
+// (a word that starts with -), whose letters can change what the command does:
+// cp -L copies through a link and cp -l makes one; yq -I sets the indent and yq -i
+// edits in place (Greptile on PR #1). A path inside an option (--x=PATH) needs no
+// folding here, as every path rule folds the token itself (fold).
 function foldCommand(raw: string): string {
-  return raw.replace(/\S+/g, (word) => {
-    if (!word.startsWith('-')) return word.toLowerCase()
-    const eq = word.indexOf('=')
-    return eq < 0 ? word : word.slice(0, eq + 1) + word.slice(eq + 1).toLowerCase()
-  })
+  return raw.replace(/\S+/g, (word) => (word.startsWith('-') ? word : word.toLowerCase()))
 }
 
 function hasGlob(segment: string): boolean {
