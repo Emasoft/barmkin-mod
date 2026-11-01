@@ -10,6 +10,7 @@ import {
   protectedPathKind,
   shellSelfProtectionReason,
   mcpSelfProtectionReason,
+  writeChangesProtectedEntries,
 } from '../hooks/lib/self-protection'
 
 test('the marketplace is read from an installed copy\'s folder, and from no other folder', () => {
@@ -68,4 +69,15 @@ test('a marketplace name with capitals is matched in any case', () => {
   expect(shellSelfProtectionReason('claude plugin marketplace remove Mixed-Case-Mkt') ?? 'allowed').toContain('barmkin-mod:')
   expect(shellSelfProtectionReason('claude plugin marketplace remove MIXED-CASE-MKT') ?? 'allowed').toContain('barmkin-mod:')
   expect(shellSelfProtectionReason('claude plugin marketplace remove other-mkt')).toBeNull()
+})
+
+// protectedEntries reads the JSON keys as written, while protectMarketplace keeps a
+// name lower-cased, so a key is folded before it is compared (Greptile on PR #1): a
+// Write that drops the entry of a marketplace registered with capitals is a change.
+test('a settings Write that drops the entry of a marketplace or plugin key with capitals is a protected change', () => {
+  protectMarketplace('Some-Market')
+  const before = '{"extraKnownMarketplaces": {"Some-Market": {"source": {"source": "github", "repo": "o/r"}}}}'
+  expect(writeChangesProtectedEntries(before, '{"extraKnownMarketplaces": {}}')).toBe(true)
+  expect(writeChangesProtectedEntries('{"enabledPlugins": {"Barmkin-Mod@Some-Market": true}}', '{"enabledPlugins": {}}')).toBe(true)
+  expect(writeChangesProtectedEntries('{"extraKnownMarketplaces": {"unrelated-market": {}}}', '{"extraKnownMarketplaces": {}}')).toBe(false)
 })

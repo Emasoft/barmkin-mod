@@ -508,7 +508,11 @@ export function protectedEntries(text: string): Map<string, string> | null {
     if (!value || typeof value !== 'object') return
     for (const [key, v] of Object.entries(value)) {
       const here = path + '/' + key
-      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || marketplaces.has(key) || HOOKS_OFF_KEYS.includes(key)) {
+      // A plugin or marketplace name is compared folded, as protectMarketplace keeps it
+      // (Greptile on PR #1: a key written SomeMarket must still count); the hooks-off
+      // keys are compared as written, since Claude Code reads settings keys exactly.
+      const name = key.toLowerCase()
+      if (name === PROTECTED_PLUGIN || name.startsWith(PROTECTED_PLUGIN + '@') || marketplaces.has(name) || HOOKS_OFF_KEYS.includes(key)) {
         entries.set(here, JSON.stringify(v))
       } else {
         walk(v, here)
