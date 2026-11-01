@@ -249,11 +249,17 @@ const ALL_ARG_WRITERS: ReadonlySet<string> = new Set([
   'copy-item',
   'move-item',
   'remove-item',
+  // Editors that take their commands from a flag or from stdin (review R6).
+  'ed',
+  'ex',
+  'vi',
+  'vim',
+  'nvim',
 ])
 const LAST_ARG_WRITERS: ReadonlySet<string> = new Set(['cp', 'install', 'ln', 'rsync'])
-// An in-place sed, perl or yq, and an interpreter running inline code: which
-// file they write cannot be read from the text, so every file named counts.
-const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b/
+// An in-place sed, perl, yq or gawk (-i inplace), and an interpreter running inline
+// code: which file they write cannot be read from the text, so every file named counts.
+const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/
 const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/i
 
 // A command split at the shell separators (|, ||, &, &&, ;, a newline) that stand
@@ -289,14 +295,30 @@ function quotedSegments(command: string): string[] {
   return out.filter((s) => s.trim() !== "")
 }
 
+// Every segment of a command as [head, ...args], read two ways: by shellSegments,
+// which also looks into $(...) and bash -c, and by quotedSegments, which does not
+// cut at a separator inside quotes. shellSegments alone loses the file after a
+// quoted script that holds a | or a ; (ex -sc '%s/a/b/|wq' <file>, review R6). A
+// path either reading finds counts, which can only add a denial.
+function commandSegments(command: string): string[][] {
+  const quoted = quotedSegments(command).map((segment) => {
+    const words = shellTokens(segment)
+    return words.length === 0 ? [] : [basenameOf(words[0] as string).toLowerCase(), ...words.slice(1)]
+  })
+  return [...shellSegments(command), ...quoted.filter((words) => words.length > 0)]
+}
+
 // The files a shell command may write, move or remove, as spelled in it.
 function writtenPaths(command: string): string[] {
   const out = redirectTargets(command)
-  for (const [head = '', ...args] of shellSegments(command)) {
+  for (const [head = '', ...args] of commandSegments(command)) {
     const files = args.filter((a) => !a.startsWith('-'))
     if (ALL_ARG_WRITERS.has(head)) out.push(...files)
     else if (LAST_ARG_WRITERS.has(head)) out.push(...files.slice(-1))
     else if (head === 'dd') out.push(...args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)))
+    // plutil writes the file it names when it replaces, inserts, removes, converts or
+    // creates; -p and -lint only read (review R6).
+    else if (head === 'plutil' && args.some((a) => /^-(?:replace|insert|remove|convert|create)$/.test(a))) out.push(...files.slice(-1))
   }
   for (const segment of quotedSegments(command)) {
     if (IN_PLACE.test(segment) || INLINE_CODE.test(segment)) out.push(...shellTokens(segment))
@@ -334,7 +356,7 @@ function changesFiles(command: string): boolean {
 // Whether a command makes a link: ln or link, cp with -l or --link (cp -al
 // too), or rsync --link-dest. The command arrives folded.
 function makesLink(command: string): boolean {
-  for (const [head = '', ...args] of shellSegments(command)) {
+  for (const [head = '', ...args] of commandSegments(command)) {
     const name = basenameOf(head)
     if (name === 'ln' || name === 'link') return true
     if (name === 'cp' && args.some((a) => a === '--link' || /^-[a-z]*l[a-z]*$/.test(a))) return true

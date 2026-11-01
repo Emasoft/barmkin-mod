@@ -81,3 +81,20 @@ test('the store folder may be listed, another plugin\'s store read, and the conf
     expect(shellSelfProtectionReason(command)).toBeNull()
   }
 })
+
+// Review R6 of the 0.3.0 fix round: editors that take their commands from a flag or
+// from stdin, gawk -i inplace, and plutil write the file they name.
+test('a settings write through ed, ex, vim, gawk -i inplace or plutil is denied; a read runs', () => {
+  for (const command of [
+    'ed ~/.claude/settings.json < /tmp/script',
+    "ex -sc '%s/a/b/|wq' ~/.claude/settings.json",
+    "vim -es -c ':wq' ~/.claude/settings.local.json",
+    "gawk -i inplace '{print}' ~/.claude/settings.json",
+    'plutil -replace disableAllHooks -bool true ~/.claude/settings.json',
+  ]) {
+    expect(shellSelfProtectionReason(command) ?? 'allowed: ' + command).toContain('settings file')
+  }
+  for (const command of ["awk '{print}' ~/.claude/settings.json", 'plutil -p ~/.claude/settings.json', 'vim --version']) {
+    expect(shellSelfProtectionReason(command)).toBeNull()
+  }
+})
