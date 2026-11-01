@@ -128,10 +128,11 @@ const UNINSTALL_VERBS: ReadonlySet<string> = new Set(['disable', 'uninstall', 'r
 const REMOVE_VERBS: ReadonlySet<string> = new Set(['remove', 'rm'])
 const REMOVAL_COMMANDS: ReadonlySet<string> = new Set(['rm', 'rmdir', 'mv', 'unlink', 'trash', 'shred'])
 
-// A folder that holds the installed copy or the marketplace clone: the
-// configuration folder itself, its plugins folder, or plugins/cache or
-// plugins/marketplaces (a glob counts when it could name one). Only under a
-// folder named .claude, so a project's own plugins folder is not mistaken for it.
+// A folder that holds the installed copy, the marketplace clone or the switch
+// store: the configuration folder itself, its plugins folder, or plugins/cache,
+// plugins/marketplaces or plugins/store (a glob counts when it could name one).
+// Only under a folder named .claude, so a project's own plugins folder is not
+// mistaken for it.
 export function isProtectedAncestor(path: string): boolean {
   const segments = path.replace(/\\/g, '/').split('/').filter((s) => s.length > 0 && s !== '.')
   const last = segments[segments.length - 1] ?? ''
@@ -139,7 +140,20 @@ export function isProtectedAncestor(path: string): boolean {
   const prevPrev = segments[segments.length - 3] ?? ''
   if (last === '.claude') return true
   if (last === 'plugins' && prev === '.claude') return true
-  return prev === 'plugins' && prevPrev === '.claude' && (segmentNames(last, 'cache') || segmentNames(last, 'marketplaces'))
+  return prev === 'plugins' && prevPrev === '.claude' && ['cache', 'marketplaces', 'store'].some((area) => segmentNames(last, area))
+}
+
+// A token naming the plugin store folder itself (`…/plugins/store`), which holds
+// the switch store beside other plugins' stores, in any spelling.
+function namesStoreFolder(token: string): boolean {
+  const segments = token.replace(/\\/g, '/').split('/').filter((s) => s.length > 0 && s !== '.')
+  return segments[segments.length - 1] === 'store' && segments[segments.length - 2] === 'plugins'
+}
+
+// A glob that could match the switch store's file name (`barmkin*`, `*.json`, `*`).
+function globCouldNameStore(token: string): boolean {
+  const base = basenameOf(token)
+  return hasGlob(base) && STORE_FILE_SAMPLES.some((s) => globMatches(base, s))
 }
 
 // Redirection targets in a command (`> f`, `>> f`, `&> f`, `>| f`), quotes
@@ -205,6 +219,13 @@ function shellWritesSettings(command: string): boolean {
   return written.some((p) => isClaudeSettingsPath(p)) || (written.length > 0 && SETTINGS_KEY_MENTION.test(command))
 }
 
+// Whether a command changes the files it reaches: find's -exec, -execdir, -ok
+// or -delete, xargs, or any write writtenPaths recognises.
+const FIND_ACTIONS = /(?:^|\s)-(?:exec|execdir|ok|okdir|delete)(?:\s|$)|\bxargs\b/
+function changesFiles(command: string): boolean {
+  return FIND_ACTIONS.test(command) || writtenPaths(command).length > 0
+}
+
 // Why a shell command (Bash, PowerShell, Monitor, an inline skill shell) is denied, or null.
 export function shellSelfProtectionReason(command: string): string | null {
   const tokens = shellTokens(command)
@@ -214,6 +235,14 @@ export function shellSelfProtectionReason(command: string): string | null {
   }
   if (tokens.some((t) => REMOVAL_COMMANDS.has(basenameOf(t))) && tokens.some((t) => isProtectedAncestor(t))) {
     return denyReason('removes or moves a folder that holds barmkin-mod')
+  }
+  // The store folder named without the file: a glob, a find or a copy into it
+  // reaches the switch store without spelling the store file's name.
+  if (tokens.some(namesStoreFolder) && (tokens.some(globCouldNameStore) || changesFiles(command))) {
+    return denyReason("reaches barmkin-mod's switch store through the plugin store folder")
+  }
+  if (tokens.some((t) => isProtectedAncestor(t)) && tokens.some(globCouldNameStore) && changesFiles(command)) {
+    return denyReason('changes files under a folder that holds barmkin-mod, through a name pattern that matches its switch store')
   }
   const runsClaude = tokens.some((t) => basenameOf(t) === 'claude')
   if (runsClaude) {

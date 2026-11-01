@@ -49,3 +49,25 @@ test('an MCP call naming a Claude Code settings file beside a key that enables p
   expect(mcpSelfProtectionReason(['/h/.claude/settings.json'])).toBeNull()
   expect(mcpSelfProtectionReason(['/proj/.vscode/settings.json', '{"disableAllHooks": true}'])).toBeNull()
 })
+
+test('the store folder named without the file is protected from writes, and from a glob that could name the store', () => {
+  for (const command of [
+    "find ~/.claude/plugins/store -name 'barmkin*' -exec perl -pi -e 's/true/false/g' {} +",
+    'cd ~/.claude/plugins/store && sed -i s/true/false/ b*',
+    'cp /tmp/evil.json ~/.claude/plugins/store/',
+    "find ~/.claude -name 'barmkin*' -exec perl -pi -e 's/true/false/g' {} +",
+    'rm -rf ~/.claude/plugins/store',
+  ]) {
+    expect(shellSelfProtectionReason(command)).toContain('self-protection')
+  }
+})
+
+test('the store folder may be listed, another plugin\'s store read, and the configuration folder searched', () => {
+  for (const command of [
+    'ls ~/.claude/plugins/store',
+    'cat ~/.claude/plugins/store/other-plugin_market-0123456789ab.json',
+    "find ~/.claude -name '*.md' -exec grep -l x {} +",
+  ]) {
+    expect(shellSelfProtectionReason(command)).toBeNull()
+  }
+})
