@@ -26,6 +26,11 @@ test('a shell write of a Claude Code settings file is denied, whatever it names'
     'tee /proj/.claude/settings.local.json < /tmp/x',
     'rm ~/.claude/settings.json',
     'mv ~/.claude/settings.json ~/.claude/settings.json.bak',
+    'dd if=/tmp/x of=/home/u/.claude/settings.json',
+    // Names only Claude Code uses, outside a folder named .claude: managed
+    // settings, and a configuration folder moved by CLAUDE_CONFIG_DIR.
+    'cp /tmp/m.json /etc/claude-code/managed-settings.json',
+    'cp /tmp/p.json /srv/claude-config/plugins/installed_plugins.json',
   ]) {
     expect(shellSelfProtectionReason(command)).toContain('settings file')
   }
@@ -57,6 +62,9 @@ test('the store folder named without the file is protected from writes, and from
     'cp /tmp/evil.json ~/.claude/plugins/store/',
     "find ~/.claude -name 'barmkin*' -exec perl -pi -e 's/true/false/g' {} +",
     'rm -rf ~/.claude/plugins/store',
+    // The store folder named by a glob, and a find that runs any program on it.
+    "find ~/.claude/plugins/st* -name 'barmkin*' -exec perl -pi -e 's/true/false/g' {} +",
+    'find ~/.claude/plugins/store -type f -exec ./patch-switches {} +',
   ]) {
     expect(shellSelfProtectionReason(command)).toContain('self-protection')
   }
@@ -65,6 +73,8 @@ test('the store folder named without the file is protected from writes, and from
 test('the store folder may be listed, another plugin\'s store read, and the configuration folder searched', () => {
   for (const command of [
     'ls ~/.claude/plugins/store',
+    // A redirection to /dev/null writes no file.
+    'ls ~/.claude/plugins/store 2>/dev/null',
     'cat ~/.claude/plugins/store/other-plugin_market-0123456789ab.json',
     "find ~/.claude -name '*.md' -exec grep -l x {} +",
   ]) {
