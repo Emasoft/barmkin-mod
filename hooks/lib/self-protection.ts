@@ -241,6 +241,39 @@ const LAST_ARG_WRITERS: ReadonlySet<string> = new Set(['cp', 'install', 'ln', 'r
 const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b/
 const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/i
 
+// A command split at the shell separators (|, ||, &, &&, ;, a newline) that stand
+// outside quotes, so the code of an interpreter one-liner or a sed script holding a
+// `;` stays one piece. shellSegments splits at every separator, quoted or not, which
+// would cut the file a one-liner names away from its interpreter. It keeps the
+// in-place and inline-code widening to its own segment (review R3).
+function quotedSegments(command: string): string[] {
+  const out: string[] = []
+  let current = ""
+  let quote: string | null = null
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string
+    if (c === "\\" && quote !== "\x27" && i + 1 < command.length) {
+      current += c + command[i + 1]
+      i++
+      continue
+    }
+    if (quote) {
+      if (c === quote) quote = null
+      current += c
+      continue
+    }
+    if (c === "\x27" || c === "\"") quote = c
+    if (c === "|" || c === "&" || c === ";" || c === "\n") {
+      out.push(current)
+      current = ""
+      continue
+    }
+    current += c
+  }
+  out.push(current)
+  return out.filter((s) => s.trim() !== "")
+}
+
 // The files a shell command may write, move or remove, as spelled in it.
 function writtenPaths(command: string): string[] {
   const out = redirectTargets(command)
@@ -250,7 +283,9 @@ function writtenPaths(command: string): string[] {
     else if (LAST_ARG_WRITERS.has(head)) out.push(...files.slice(-1))
     else if (head === 'dd') out.push(...args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)))
   }
-  if (IN_PLACE.test(command) || INLINE_CODE.test(command)) out.push(...shellTokens(command))
+  for (const segment of quotedSegments(command)) {
+    if (IN_PLACE.test(segment) || INLINE_CODE.test(segment)) out.push(...shellTokens(segment))
+  }
   return out
 }
 
@@ -411,7 +446,7 @@ export const SETTINGS_LINK_REASON = denyReason(
   'edits a file with the size and modification time of a Claude Code settings file, so it may be a second name (a hard link) for it',
 )
 const SHELL_SETTINGS_REASON = denyReason(
-  'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be)',
+  'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be; to only read the file, use cat or jq)',
 )
 
 export const SWITCH_COMMAND_REASON = denyReason('runs the ' + SWITCH_COMMAND + ' switch command')
