@@ -1547,8 +1547,6 @@ const TAINT_COLOR = 'error'
 const CLEAR_ACTIVE = { color: 'success', label: '🏰 Barmkin session guard active' }
 const CLEAR_DEGRADED = { color: 'warning', label: '🏰 Barmkin session guard degraded' }
 
-// Green needs every protection switch on as well: a session with one switched
-// off is not the guarded session the green label claims.
 // `jevOn`: Jev configured and its switch on. Green also needs every protection
 // switch on: a session with one switched off is not the guarded session the
 // green label claims.
