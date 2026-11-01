@@ -266,6 +266,18 @@ function changesFiles(command: string): boolean {
   return FIND_ACTIONS.test(command) || writtenPaths(command).length > 0
 }
 
+// Whether a command makes a link: ln or link, cp with -l or --link (cp -al
+// too), or rsync --link-dest. The command arrives folded.
+function makesLink(command: string): boolean {
+  for (const [head = '', ...args] of shellSegments(command)) {
+    const name = basenameOf(head)
+    if (name === 'ln' || name === 'link') return true
+    if (name === 'cp' && args.some((a) => a === '--link' || /^-[a-z]*l[a-z]*$/.test(a))) return true
+    if (name === 'rsync' && args.some((a) => a.startsWith('--link-dest'))) return true
+  }
+  return false
+}
+
 // Why a shell command (Bash, PowerShell, Monitor, an inline skill shell) is denied, or null.
 export function shellSelfProtectionReason(raw: string): string | null {
   // Folded once here, so every rule below compares case-folded (see fold).
@@ -277,6 +289,14 @@ export function shellSelfProtectionReason(raw: string): string | null {
   }
   if (tokens.some((t) => REMOVAL_COMMANDS.has(basenameOf(t))) && tokens.some((t) => isProtectedAncestor(t))) {
     return denyReason('removes or moves a folder that holds barmkin-mod')
+  }
+  // A hard link gives a protected file a second name that the file tools never
+  // resolve (FsStat.realPath keeps the spelling of a hard link), so an Edit of the
+  // link would change the settings unseen (review R2). A link command naming a
+  // settings file or a folder that holds barmkin-mod is denied, a symbolic link
+  // too: denying one costs little, and such a link has no ordinary use.
+  if (makesLink(command) && tokens.some((t) => isSettingsFile(t) || isProtectedAncestor(t))) {
+    return denyReason('makes a second name (a link) for a file barmkin-mod protects')
   }
   // The store folder named without the file: a glob, a find or a copy into it
   // reaches the switch store without spelling the store file's name.
