@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-11-01T06:25:13+0100
+updated: 2026-11-01T07:36:01+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -16,7 +16,7 @@ approved: true
 approval-judge: main-agent@barmkin-mod
 approval-datetime: 2026-10-30T02:42:43+0100
 release-via: none
-implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c, 32fb6df, 33dffc8, 5dac373, 3d90219, 3887cbb, a2088b1, 0289846, 6a218c9, 25f1a13, 9b26287, 5896a95, e890773, 2dbf7d1]
+implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c, 32fb6df, 33dffc8, 5dac373, 3d90219, 3887cbb, a2088b1, 0289846, 6a218c9, 25f1a13, 9b26287, 5896a95, e890773, 2dbf7d1, e5be0c4]
 ---
 
 # Every security function switchable, with a side panel
@@ -29,7 +29,7 @@ implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 8
 - Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits).
 - The second review, of the fix round dce355a to 9a2fb98 (2026-11-01), returned REVISE: R1 and R2 major (a case spelling passed every path rule; a hard link gave the settings file a second name), R3 to R5 minor (reads denied as writes; rm -rf of a temp .claude denied; marketplace names matched as substrings), R6 nit (writers the shell rule did not know).
 - Answered: the fix-round review (2026-11-01, REVISE) on branch fix/qat87nrf-case-and-hardlink, version 0.3.1. R1 fixed (32fb6df); R2 fixed in the shell (33dffc8) and for the file tools by size and modification time (5dac373); R3 fixed (3d90219); R5 fixed (3887cbb); R6 fixed (a2088b1); R4 rejected, with the reason in Known limits; README and version in 0289846. The orchestrator pushed the branch as PR #1, so CI runs on it.
-- PR #1 (Emasoft/barmkin-mod, opened by the orchestrator, not merged) got two Greptile findings, both verified by reading and by a red test: a settings Write could drop the entry of a marketplace registered with capitals, since protectMarketplace keeps names lower-cased but protectedEntries compared JSON keys as written (fixed in 9b26287); and the whole-command fold turned cp -L into cp -l (and yq -I, perl -I into in-place edits), so a plain backup of a settings file was denied (fixed in 5896a95, option letters keep their case, BSD sed -I named). A missing test found by the mutation check was added in 25f1a13; README in e890773 and 2dbf7d1.
+- PR #1 (Emasoft/barmkin-mod, opened by the orchestrator, not merged) got two Greptile findings, both verified by reading and by a red test: a settings Write could drop the entry of a marketplace registered with capitals, since protectMarketplace keeps names lower-cased but protectedEntries compared JSON keys as written (fixed in 9b26287); and the whole-command fold turned cp -L into cp -l (and yq -I, perl -I into in-place edits), so a plain backup of a settings file was denied ((fixed in 5896a95 and e5be0c4, option letters keep their case, BSD sed -I named)). A missing test found by the mutation check was added in 25f1a13; README in e890773 and 2dbf7d1.
 - NEXT ACTION: the PR branch is re-pushed with these commits; the orchestrator reads its checks and merges; then the owner runs the Desktop check and ticks box 4, and the card can close.
 
 ## Goal
