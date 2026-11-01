@@ -421,10 +421,11 @@ async function noteSwitches($: any, text: string): Promise<void> {
 
 // The last switch map and fingerprint this process loaded, checked or wrote.
 // $.state holds them for the gates and survives a module reload, but /clear,
-// /resume and /branch reset it; this variable survives those resets (not a
-// module reload, after which session.start loads the store again). Without it a
-// store edited before a /clear was taken as this session's own after it, with
-// no notice (step-1 review, finding 2).
+// /resume and /branch reset it. This variable survives those resets; a module
+// reload starts it empty, but $.state survives the reload and the check that
+// session.start runs then fills this again. Without it a store edited before a
+// /clear was taken as this session's own after it, with no notice (step-1
+// review, finding 2).
 let lastKnown: { map: SwitchMap; hash: string } | null = null
 
 // The tamper check over one read of the store (checkStore in switches.ts), with
