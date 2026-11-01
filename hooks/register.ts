@@ -113,6 +113,8 @@ import {
   editedText,
   SWITCH_COMMAND_REASON,
   mcpSelfProtectionReason,
+  marketplaceFromRoot,
+  protectMarketplace,
 } from './lib/self-protection'
 
 // ---------------------------------------------------------------------------
@@ -842,6 +844,12 @@ async function screenContent(
 // ---------------------------------------------------------------------------
 
 async function sessionStartHook($: any, e: any, next: any) {
+  // The marketplace this copy was installed from is protected beside the
+  // published one, so a copy from another marketplace (the upstream project's)
+  // is covered too. A --plugin-dir copy has none: its folder is the developer's.
+  const marketplace = marketplaceFromRoot($.plugin.root)
+  if (marketplace) protectMarketplace(marketplace)
+
   // The switches load first, so every gate reads them from here on. A store
   // that cannot be read leaves $.state null, which every gate reads as all on.
   let sw = defaultSwitches()

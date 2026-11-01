@@ -28,7 +28,35 @@ const SETTINGS_BASENAMES: readonly string[] = [
   'known_marketplaces.json',
 ]
 const SETTINGS_MENTION = /settings(?:\.local)?\.json|managed-settings\.json|installed_plugins\.json|known_marketplaces\.json|enabledPlugins|extraKnownMarketplaces/
-const MENTIONS_US = /barmkin-mod|emasoft-barmkin/
+// The marketplaces this plugin is protected under: the one it is published in,
+// and the one the running copy was installed from (protectMarketplace, called by
+// register.ts at session start), which differs for a copy installed from
+// another marketplace, such as the upstream project's.
+const marketplaces = new Set<string>([PROTECTED_MARKETPLACE])
+
+// Adds the marketplace a running copy came from. A name that is not a plain
+// marketplace name (letters, digits, dot, dash, underscore) is ignored.
+export function protectMarketplace(name: string): void {
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) marketplaces.add(name)
+}
+
+// The marketplace of an installed copy, from its folder
+// (`…/plugins/cache/<marketplace>/barmkin-mod/<version>`), or null for a copy
+// anywhere else, such as a --plugin-dir working tree.
+export function marketplaceFromRoot(root: unknown): string | null {
+  if (typeof root !== 'string') return null
+  const segments = root.replace(/\\/g, '/').split('/').filter(Boolean)
+  for (let i = 0; i + 3 < segments.length; i++) {
+    if (segments[i] === 'plugins' && segments[i + 1] === 'cache' && segments[i + 3] === PROTECTED_PLUGIN) return segments[i + 2]
+  }
+  return null
+}
+
+// A mention of this plugin or of a marketplace it is protected under.
+function mentionsUs(text: string): boolean {
+  return text.includes(PROTECTED_PLUGIN) || [...marketplaces].some((m) => text.includes(m))
+}
+
 // Settings keys that turn this mod off without naming it: disableAllHooks stops
 // every installed mod (from any settings file), allowManagedHooksOnly and
 // allowManagedModsOnly every mod the organization does not manage. Any change to
@@ -43,12 +71,12 @@ const SETTINGS_KEY_MENTION = /enabledPlugins|extraKnownMarketplaces|disableAllHo
 const CLAUDE_ONLY_BASENAMES: readonly string[] = ['managed-settings.json', 'installed_plugins.json', 'known_marketplaces.json']
 
 // The store file is `<plugin>_<marketplace>-<hash>.json` (`inline` for a --plugin-dir
+// The store file is `<plugin>_<marketplace>-<hash>.json` (`inline` for a --plugin-dir
 // copy), whose hash part is not knowable here, so a glob is tested against these shapes.
 const STORE_FILE_PREFIX = PROTECTED_PLUGIN + '_'
-const STORE_FILE_SAMPLES: readonly string[] = [
-  STORE_FILE_PREFIX + PROTECTED_MARKETPLACE + '-000000000000.json',
-  STORE_FILE_PREFIX + 'inline-000000000000.json',
-]
+function storeFileSamples(): string[] {
+  return [...marketplaces, 'inline'].map((m) => STORE_FILE_PREFIX + m + '-000000000000.json')
+}
 
 export type ProtectedKind = 'store' | 'install' | 'marketplace'
 
@@ -87,9 +115,9 @@ export function protectedPathKind(path: string): ProtectedKind | null {
     if (segments[i] !== 'plugins') continue
     const area = segments[i + 1] ?? ''
     const target = segments[i + 2] ?? ''
-    if (area === 'store' && (hasGlob(target) ? STORE_FILE_SAMPLES.some((s) => globMatches(target, s)) : target.startsWith(STORE_FILE_PREFIX))) return 'store'
-    if (area === 'cache' && segmentNames(target, PROTECTED_MARKETPLACE)) return 'install'
-    if (area === 'marketplaces' && segmentNames(target, PROTECTED_MARKETPLACE)) return 'marketplace'
+    if (area === 'store' && (hasGlob(target) ? storeFileSamples().some((s) => globMatches(target, s)) : target.startsWith(STORE_FILE_PREFIX))) return 'store'
+    if (area === 'cache' && [...marketplaces].some((m) => segmentNames(target, m))) return 'install'
+    if (area === 'marketplaces' && [...marketplaces].some((m) => segmentNames(target, m))) return 'marketplace'
   }
   // The store file named alone, as from inside the store folder.
   const base = segments[segments.length - 1] ?? ''
@@ -153,7 +181,7 @@ function namesStoreFolder(token: string): boolean {
 // A glob that could match the switch store's file name (`barmkin*`, `*.json`, `*`).
 function globCouldNameStore(token: string): boolean {
   const base = basenameOf(token)
-  return hasGlob(base) && STORE_FILE_SAMPLES.some((s) => globMatches(base, s))
+  return hasGlob(base) && storeFileSamples().some((s) => globMatches(base, s))
 }
 
 // Redirection targets in a command (`> f`, `>> f`, `&> f`, `>| f`), quotes
@@ -250,13 +278,14 @@ export function shellSelfProtectionReason(command: string): string | null {
     const pluginVerb = lower.includes('plugin') || lower.includes('plugins')
     const namesPlugin = tokens.some((t) => t === PROTECTED_PLUGIN || t.startsWith(PROTECTED_PLUGIN + '@'))
     if (pluginVerb && namesPlugin && lower.some((t) => UNINSTALL_VERBS.has(t))) return denyReason('disables or uninstalls barmkin-mod')
-    if (pluginVerb && lower.includes('marketplace') && tokens.includes(PROTECTED_MARKETPLACE) && lower.some((t) => REMOVE_VERBS.has(t))) {
-      return denyReason('removes the ' + PROTECTED_MARKETPLACE + ' marketplace')
+    const marketplace = tokens.find((t) => marketplaces.has(t))
+    if (pluginVerb && lower.includes('marketplace') && marketplace && lower.some((t) => REMOVE_VERBS.has(t))) {
+      return denyReason('removes the ' + marketplace + ' marketplace')
     }
     if (command.includes(SWITCH_COMMAND)) return denyReason('runs the ' + SWITCH_COMMAND + ' switch command in another session')
   }
   if (shellWritesSettings(command)) return SHELL_SETTINGS_REASON
-  if (MENTIONS_US.test(command) && SETTINGS_MENTION.test(command)) return denyReason("touches barmkin-mod's entries in the settings files")
+  if (mentionsUs(command) && SETTINGS_MENTION.test(command)) return denyReason("touches barmkin-mod's entries in the settings files")
   return null
 }
 
@@ -318,7 +347,7 @@ export function editedText(text: string | null, tool: string, input: Record<stri
 export function fileSelfProtectionReason(tool: string, input: Record<string, unknown>, path: string): string | null {
   const kind = protectedPathKind(path)
   if (kind) return denyReason('writes into ' + KIND_TEXT[kind])
-  if (isSettingsFile(path) && editStrings(tool, input).some((s) => MENTIONS_US.test(s))) {
+  if (isSettingsFile(path) && editStrings(tool, input).some((s) => mentionsUs(s))) {
     return denyReason("edits barmkin-mod's entries in a settings file")
   }
   return null
@@ -354,7 +383,7 @@ export function protectedEntries(text: string): Map<string, string> | null {
     if (!value || typeof value !== 'object') return
     for (const [key, v] of Object.entries(value)) {
       const here = path + '/' + key
-      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || key === PROTECTED_MARKETPLACE || HOOKS_OFF_KEYS.includes(key)) {
+      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || marketplaces.has(key) || HOOKS_OFF_KEYS.includes(key)) {
         entries.set(here, JSON.stringify(v))
       } else {
         walk(v, here)
@@ -416,7 +445,7 @@ export function mcpSelfProtectionReason(strings: readonly string[]): string | nu
     }
   }
   const namesSettings = strings.some((s) => shellTokens(s).some((t) => isSettingsFile(t)))
-  if (namesSettings && strings.some((s) => MENTIONS_US.test(s))) return denyReason("touches barmkin-mod's entries in the settings files")
+  if (namesSettings && strings.some((s) => mentionsUs(s))) return denyReason("touches barmkin-mod's entries in the settings files")
   const namesClaudeSettings = strings.some((s) => shellTokens(s).some((t) => isClaudeSettingsPath(t)))
   if (namesClaudeSettings && strings.some((s) => SETTINGS_KEY_MENTION.test(s))) {
     return denyReason('touches the settings that enable plugins or turn hooks off in a Claude Code settings file')
