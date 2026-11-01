@@ -468,6 +468,61 @@ test('after /clear the switches are read back from the store', async ($, on) => 
   expect(await statusText($)).toContain('off: taint')
 })
 
+// What /clear, /resume and /branch do to the switch values in $.state: put them
+// back to their defaults. The test kit keeps $.state across a classic
+// SessionStart, so a test hook answers a reset value with its default until the
+// mod writes it again (state.get is answered beneath the plugins).
+function resettableSwitchState(on: any): () => void {
+  const keys = ['switches', 'switchesHash', 'switchesNotice']
+  const reset = new Set<string>()
+  on('state.get', (_$: any, e: any, next: any) => (e.plugin === 'barmkin-mod' && reset.has(e.key) ? { value: { value: null, version: 0 } } : next(e)))
+  on('state.set', (_$: any, e: any, next: any) => {
+    if (e.plugin === 'barmkin-mod') reset.delete(e.key)
+    return next(e)
+  })
+  return () => keys.forEach((k) => reset.add(k))
+}
+
+test('tamper: a store edited before /clear is still found after it, and written back', async ($, on) => {
+  const box = owner(on)
+  on('classic.SessionStart', () => ({}))
+  const clear = resettableSwitchState(on)
+  await switchOff($, 'taint')
+  const mine = box.value
+  box.value = toStoreValue({ ...defaultSwitches(), 'self-protection': false, redaction: false })
+  clear()
+  await $.classic.SessionStart({ source: 'clear' })
+  expect(box.logs).toContain(TAMPER_NOTICE)
+  expect(box.value).toEqual(mine)
+  const status = await statusText($)
+  expect(status).toContain('off: taint')
+  expect(status).not.toContain('redaction')
+})
+
+test('after /clear an unedited store keeps this session\'s switches, and the ones off are named', async ($, on) => {
+  const box = owner(on)
+  on('classic.SessionStart', () => ({}))
+  const clear = resettableSwitchState(on)
+  await switchOff($, 'taint')
+  clear()
+  await $.classic.SessionStart({ source: 'clear' })
+  expect(await statusText($)).toContain('off: taint')
+  expect(box.logs.some((line) => line.includes('these switches are off: taint'))).toBe(true)
+  expect(box.logs).not.toContain(TAMPER_NOTICE)
+})
+
+test('startup and compaction raise SessionStart but reset nothing, so the switches are not checked or named again', async ($, on) => {
+  const box = owner(on, toStoreValue({ ...defaultSwitches(), taint: false }))
+  sessionStubs(on, '9.9.9')
+  on('classic.SessionStart', () => ({}))
+  await start($)
+  const named = () => box.logs.filter((line) => line.includes('these switches are off: taint')).length
+  expect(named()).toBe(1)
+  await $.classic.SessionStart({ source: 'startup' })
+  await $.classic.SessionStart({ source: 'compact' })
+  expect(named()).toBe(1)
+})
+
 test('session start loads the switches, opens the panel without focus, and registers the commands', async ($, on) => {
   owner(on, toStoreValue({ ...defaultSwitches(), redaction: false }))
   const seen = sessionStubs(on, '9.9.9')

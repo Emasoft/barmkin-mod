@@ -419,22 +419,36 @@ async function noteSwitches($: any, text: string): Promise<void> {
   }
 }
 
+// The last switch map and fingerprint this process loaded, checked or wrote.
+// $.state holds them for the gates and survives a module reload, but /clear,
+// /resume and /branch reset it; this variable survives those resets (not a
+// module reload, after which session.start loads the store again). Without it a
+// store edited before a /clear was taken as this session's own after it, with
+// no notice (step-1 review, finding 2).
+let lastKnown: { map: SwitchMap; hash: string } | null = null
+
 // The tamper check over one read of the store (checkStore in switches.ts), with
 // its outcome written: a restore puts this session's last known value back into
 // the store, and every outcome but 'unchanged' records the map and fingerprint
-// in $.state. Returns the switches this session now uses. Runs at session start,
-// after /clear, /resume and /branch, before every switch write, and on
-// /barmkin-mod-rule and /barmkin-mod-panel; never inside a gate.
+// in $.state (an empty $.state is filled whatever the outcome). Returns the
+// switches this session now uses. Runs at session start, after /clear, /resume
+// and /branch, before every switch write, and on /barmkin-mod-rule and
+// /barmkin-mod-panel; never inside a gate.
 async function checkSwitchStoreNow($: any): Promise<SwitchMap> {
   const stored = await $.store.get(SWITCH_STORE_KEY)
   const held = await read($, switchesAtom)
-  const known = held === null ? null : normalizeSwitches({ switches: held })
-  const check = checkStore(known, await read($, switchesHashAtom), stored)
+  const heldHash = await read($, switchesHashAtom)
+  // After a reset $.state is empty, and this process's last known value stands in.
+  const fromState = held !== null && heldHash !== null
+  const known = fromState ? normalizeSwitches({ switches: held }) : (lastKnown?.map ?? null)
+  const knownHash = fromState ? heldHash : (lastKnown?.hash ?? null)
+  const check = checkStore(known, knownHash, stored)
   if (check.kind === 'restore') await $.store.set(SWITCH_STORE_KEY, check.storeValue)
-  if (check.kind !== 'unchanged') {
+  if (check.kind !== 'unchanged' || !fromState) {
     await update($, switchesAtom, () => check.map)
     await update($, switchesHashAtom, () => check.hash)
   }
+  lastKnown = { map: check.map, hash: check.hash }
   if (check.kind === 'restore') await noteSwitches($, TAMPER_NOTICE)
   if (check.kind === 'accept') await noteSwitches($, ACCEPT_NOTICE)
   return check.map
@@ -454,7 +468,9 @@ function setSwitch($: any, id: SwitchId, on: boolean | 'toggle'): Promise<Switch
     const value = toStoreValue(changed)
     await $.store.set(SWITCH_STORE_KEY, value)
     await update($, switchesAtom, () => changed)
-    await update($, switchesHashAtom, () => storeFingerprint(value))
+    const hash = storeFingerprint(value)
+    await update($, switchesHashAtom, () => hash)
+    lastKnown = { map: changed, hash }
     return changed
   })
 }
@@ -858,10 +874,7 @@ async function sessionStartHook($: any, e: any, next: any) {
   } catch {
     logLine($, 'barmkin-mod: could not read the switch store, so every switch is on for this session')
   }
-  // A switch turned off in an earlier session, or in the store file between
-  // sessions, is named here, so it never goes unseen.
-  const off = switchesOff(sw)
-  if (off.length > 0) logLine($, 'barmkin-mod: these switches are off: ' + off.join(', ') + ' (/barmkin-mod-panel to change them)')
+  logSwitchesOff($, sw)
 
   if (sw['posture-check']) {
     for (const line of await postureLines($)) logLine($, line)
@@ -907,6 +920,14 @@ async function sessionStartHook($: any, e: any, next: any) {
     // as above
   }
   return next(e)
+}
+
+// A switch turned off in an earlier session, or in the store file between
+// sessions, is named at session start and after every reset of $.state, so it
+// never goes unseen.
+function logSwitchesOff($: any, sw: SwitchMap): void {
+  const off = switchesOff(sw)
+  if (off.length > 0) logLine($, 'barmkin-mod: these switches are off: ' + off.join(', ') + ' (/barmkin-mod-panel to change them)')
 }
 
 // $.ui.status holds one line per plugin and draws a newline as U+FFFD, so each
@@ -1826,7 +1847,7 @@ async function switchPaneHook($: any, e: any, next: any) {
 
 async function sessionResetHook($: any, e: any, next: any) {
   try {
-    await checkSwitchStore($)
+    logSwitchesOff($, await checkSwitchStore($))
   } catch {
     logLine($, 'barmkin-mod: could not read the switch store; the switches this session holds stay in force (all on if it holds none)')
   }
@@ -1843,8 +1864,10 @@ export function register(on: any, options: Record<string, unknown>) {
   pluginOptions = options ?? {}
 
   on('session.start', sessionStartHook)
-  // /clear, /resume and /branch reset $.state; the switches are read back from the store.
-  on('classic.SessionStart', sessionResetHook)
+  // /clear, /resume and /branch (reported as fork) reset $.state; the switches are
+  // read back from the store. Startup and compaction also raise this event but
+  // reset nothing, and session.start has already loaded the switches.
+  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, sessionResetHook)
   on('prompt.submit', promptSubmitHook)
   on('session.compact', compactHook)
   on('session.end', sessionEndHook)
