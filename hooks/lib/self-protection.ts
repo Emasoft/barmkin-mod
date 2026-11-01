@@ -121,6 +121,19 @@ function fold(path: string): string {
   return path.replace(/\\/g, '/').toLowerCase()
 }
 
+// A shell command folded for comparison: every word lower-cased except the letters
+// of an option (a word that starts with -), whose case can change what the command
+// does: cp -L copies through a link and cp -l makes one; yq -I sets the indent and
+// yq -i edits in place (Greptile on PR #1). The value after an option's = is folded
+// like any other word.
+function foldCommand(raw: string): string {
+  return raw.replace(/\S+/g, (word) => {
+    if (!word.startsWith('-')) return word.toLowerCase()
+    const eq = word.indexOf('=')
+    return eq < 0 ? word : word.slice(0, eq + 1) + word.slice(eq + 1).toLowerCase()
+  })
+}
+
 function hasGlob(segment: string): boolean {
   return /[*?[]/.test(segment)
 }
@@ -259,7 +272,10 @@ const ALL_ARG_WRITERS: ReadonlySet<string> = new Set([
 const LAST_ARG_WRITERS: ReadonlySet<string> = new Set(['cp', 'install', 'ln', 'rsync'])
 // An in-place sed, perl, yq or gawk (-i inplace), and an interpreter running inline
 // code: which file they write cannot be read from the text, so every file named counts.
-const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/
+// Option letters arrive as typed (foldCommand): BSD sed edits in place with -I too,
+// while perl -I names an include folder and yq -I an indent. INLINE_CODE ignores
+// case, as PowerShell takes -Command in any case and perl -E runs code like -e.
+const IN_PLACE = /\bsed\b[^|;&]*\s-[a-zA-Z]*I\b|\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/
 const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/i
 
 // A command split at the shell separators (|, ||, &, &&, ;, a newline) that stand
@@ -354,12 +370,13 @@ function changesFiles(command: string): boolean {
 }
 
 // Whether a command makes a link: ln or link, cp with -l or --link (cp -al
-// too), or rsync --link-dest. The command arrives folded.
+// too), or rsync --link-dest. The command arrives folded with its option letters as
+// typed (foldCommand), so cp -L, which copies through a link, is not cp -l.
 function makesLink(command: string): boolean {
   for (const [head = '', ...args] of commandSegments(command)) {
     const name = basenameOf(head)
     if (name === 'ln' || name === 'link') return true
-    if (name === 'cp' && args.some((a) => a === '--link' || /^-[a-z]*l[a-z]*$/.test(a))) return true
+    if (name === 'cp' && args.some((a) => a === '--link' || /^-[A-Za-z]*l[A-Za-z]*$/.test(a))) return true
     if (name === 'rsync' && args.some((a) => a.startsWith('--link-dest'))) return true
   }
   return false
@@ -367,8 +384,9 @@ function makesLink(command: string): boolean {
 
 // Why a shell command (Bash, PowerShell, Monitor, an inline skill shell) is denied, or null.
 export function shellSelfProtectionReason(raw: string): string | null {
-  // Folded once here, so every rule below compares case-folded (see fold).
-  const command = raw.toLowerCase()
+  // Folded once here, so every rule below compares names and paths case-folded;
+  // option letters keep their case (see foldCommand).
+  const command = foldCommand(raw)
   const tokens = shellTokens(command)
   for (const token of tokens) {
     const kind = protectedPathKind(token)

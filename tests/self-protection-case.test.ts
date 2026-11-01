@@ -38,3 +38,27 @@ test("a read of a case spelling of a settings file still runs", () => {
     expect(shellSelfProtectionReason(command)).toBeNull()
   }
 })
+
+// The fold keeps option letters as typed, since their case can change what a command
+// does (Greptile on PR #1): cp -L copies through a link and cp -l makes one; yq -I sets
+// the indent and perl -I an include folder, while yq -i and perl -i edit in place.
+// BSD sed takes -I for an in-place edit as well as -i.
+test("option letters keep their case: a read with -L or -I runs, a link or an in-place edit is still denied", () => {
+  for (const command of [
+    "cp -L ~/.claude/settings.json /tmp/backup.json",
+    "cp -RL ~/.claude /tmp/claude-backup",
+    "yq -I 2 . ~/.claude/settings.json",
+    "perl -I lib ~/tools/show.pl ~/.claude/settings.json",
+  ]) {
+    expect(shellSelfProtectionReason(command)).toBeNull()
+  }
+  for (const command of [
+    "cp -l ~/.claude/settings.json /tmp/s.json",
+    "cp -Rl ~/.claude /tmp/c",
+    "CP -l ~/.CLAUDE/Settings.json /tmp/s.json",
+    "sed -I \"\" s/a/b/ ~/.claude/settings.json",
+    "yq -i .a=1 ~/.claude/settings.json",
+  ]) {
+    expect(shellSelfProtectionReason(command) ?? "allowed: " + command).toContain("barmkin-mod:")
+  }
+})
