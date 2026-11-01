@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-11-01T04:54:05+0100
+updated: 2026-11-01T05:56:53+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -16,7 +16,7 @@ approved: true
 approval-judge: main-agent@barmkin-mod
 approval-datetime: 2026-10-30T02:42:43+0100
 release-via: none
-implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c]
+implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c, 32fb6df, 33dffc8, 5dac373, 3d90219, 3887cbb, a2088b1, 0289846, 6a218c9]
 ---
 
 # Every security function switchable, with a side panel
@@ -27,8 +27,9 @@ implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 8
 - CI: GitHub Actions has never run on this repository (actions/runs total_count 0, read 2026-11-01), although Actions is enabled and ci.yml triggers on push to main and on pull_request. The only check on 9a2fb98 is Socket Security: Project Report (success), and the commit has no statuses. The test evidence for 0.3.0 is the local runs of the review round (claude plugin test 643 pass, 0 fail, with OPENROUTER_API_KEY unset and set to a placeholder).
 - The step-1 review (REVISE: 2 major, 5 minor, 3 nit) is answered by the commits dce355a to 9a2fb98, listed in implementation-commits.
 - Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits).
-- Open: a second review, of the fix round dce355a to 9a2fb98 (2026-11-01), returned REVISE. R1 (major): on a case-insensitive volume a case spelling (Settings.json, .CLAUDE, plugins/CACHE) passes every path rule, which compare exact case. R2 (major): a hard link gives the settings file a second name that the file tools do not resolve, so ln followed by an Edit of the link changes settings in two calls. R3 to R5 (minor): read-only inline code and a command with sed -i anywhere are denied as settings writes; rm -rf of any folder named .claude is denied, temp homes included; marketplace names are matched as substrings. R6 (nit): ed, ex, vim -es, gawk -i inplace and plutil are writers the shell rule does not know. None is fixed yet; the reviewer's probes are the only evidence so far.
-- NEXT ACTION: fix or reject R1 to R6, each with a test that is red before the fix, on a branch that lands through a pull request; then the owner runs the Desktop check and ticks box 4, and the card can close.
+- The second review, of the fix round dce355a to 9a2fb98 (2026-11-01), returned REVISE: R1 and R2 major (a case spelling passed every path rule; a hard link gave the settings file a second name), R3 to R5 minor (reads denied as writes; rm -rf of a temp .claude denied; marketplace names matched as substrings), R6 nit (writers the shell rule did not know).
+- Answered: the fix-round review (2026-11-01, REVISE) on branch fix/qat87nrf-case-and-hardlink, version 0.3.1. R1 fixed (32fb6df); R2 fixed in the shell (33dffc8) and for the file tools by size and modification time (5dac373); R3 fixed (3d90219); R5 fixed (3887cbb); R6 fixed (a2088b1); R4 rejected, with the reason in Known limits; README and version in 0289846. Not pushed: the orchestrator opens a pull request, so CI runs on it.
+- NEXT ACTION: the orchestrator opens the pull request and reads its CI; then the owner runs the Desktop check and ticks box 4, and the card can close.
 
 ## Goal
 
@@ -68,6 +69,10 @@ Every security function barmkin-mod has today gets its own named switch, on by d
 - Found in the step-1 review (round 2): a child session started with `claude --safe-mode -p` or `claude --bare -p` runs no installed mod; self-protection does not stop it (a permission rule that denies those commands can).
 - Found in the step-1 review (round 2): which origin the Desktop app gives a command typed there is not measured (owner's Desktop check, box 4). Another plugin cannot rewrite the origin: the engine skips a hook that passes on an origin it did not set (measured with the test kit).
 - Found in the step-1 review (round 2): a --plugin-dir copy is not protected by path, since its folder is the developer's working tree. An installed copy is protected under the marketplace its folder names and under emasoft-barmkin.
+- Found in the fix-round review (R1): names are compared case-folded, because the default macOS and Windows volumes are case-insensitive and FsStat.realPath keeps the spelling of a case alias. On a case-sensitive volume a name that differs only in case is protected too.
+- Found in the fix-round review (R2): a hard link is a second name the file tools do not resolve, and FsStat holds no inode or link count. Making a link to a settings file or into a folder that holds barmkin-mod is denied in the shell; a Write or an Edit of an existing file with the size and modification time of a user or project settings file is denied (a cp -p copy too). Open: a hard link made another way to the switch store or to a file of the installed copy.
+- Found in the fix-round review (R4, rejected): rm -rf of a folder named .claude stays denied under a temp root (/tmp, /var/folders), because the shell rule cannot tell a temporary home from a configuration folder that CLAUDE_CONFIG_DIR puts there, or from a project-scope install in a temp project. The cost is one cleanup the person runs.
+- Found in the fix-round review (R6): the writers the shell rule knows are listed in the README Limits; a program not named there, or a script file, is not recognised.
 
 ## Acceptance
 
