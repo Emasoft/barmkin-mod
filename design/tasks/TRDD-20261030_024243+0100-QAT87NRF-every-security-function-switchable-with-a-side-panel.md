@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-11-01T04:30:59+0100
+updated: 2026-11-01T04:44:14+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -20,6 +20,13 @@ implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 8
 ---
 
 # Every security function switchable, with a side panel
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-11-01
+
+- Released: 0.3.0 is pushed to main at 9a2fb98 (a fast-forward) and installed at user scope, 0.2.2 to 0.3.0; a Claude Code restart applies it.
+- The step-1 review (REVISE: 2 major, 5 minor, 3 nit) is answered by the commits dce355a to 9a2fb98, listed in implementation-commits.
+- Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits). Nothing else is open.
+- NEXT ACTION: the owner runs the Desktop check and ticks box 4; the card can then close.
 
 ## Goal
 
