@@ -58,3 +58,14 @@ test('the configuration folder is read from an installed copy\'s folder, and fro
   expect(configDirFromRoot('/work/barmkin-mod')).toBeNull()
   expect(configDirFromRoot(undefined)).toBeNull()
 })
+
+// mentionsUs compares the lower-cased command, so a marketplace name with capitals
+// must be kept lower-cased too, or it never matches (review R1); a mutation that
+// kept it as given survived every other test.
+test('a marketplace name with capitals is matched in any case', () => {
+  protectMarketplace('Mixed-Case-Mkt')
+  expect(shellSelfProtectionReason('claude plugin marketplace remove mixed-case-mkt') ?? 'allowed').toContain('barmkin-mod:')
+  expect(shellSelfProtectionReason('claude plugin marketplace remove Mixed-Case-Mkt') ?? 'allowed').toContain('barmkin-mod:')
+  expect(shellSelfProtectionReason('claude plugin marketplace remove MIXED-CASE-MKT') ?? 'allowed').toContain('barmkin-mod:')
+  expect(shellSelfProtectionReason('claude plugin marketplace remove other-mkt')).toBeNull()
+})
