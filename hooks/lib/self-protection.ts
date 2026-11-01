@@ -355,7 +355,7 @@ export function fileSelfProtectionReason(tool: string, input: Record<string, unk
 
 export const SETTINGS_WRITE_REASON = denyReason("changes barmkin-mod's entries, or a setting that turns hooks off, in a settings file")
 export const SETTINGS_EDIT_UNCHECKED_REASON = denyReason(
-  'edits a settings file in a way that cannot be checked (the text to replace is not in the file)',
+  'edits a settings file in a way that cannot be checked (the edit cannot be applied to the file as it is)',
 )
 const SHELL_SETTINGS_REASON = denyReason(
   'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be)',

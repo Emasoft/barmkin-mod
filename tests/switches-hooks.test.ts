@@ -546,6 +546,20 @@ test('after /clear an unedited store keeps this session\'s switches, and the one
   expect(box.logs).not.toContain(TAMPER_NOTICE)
 })
 
+test('tamper: a store loaded at session start and edited before /clear is written back, with no switch changed', async ($, on) => {
+  const box = owner(on, toStoreValue({ ...defaultSwitches(), redaction: false }))
+  sessionStubs(on, '9.9.9')
+  on('classic.SessionStart', () => ({}))
+  const clear = resettableSwitchState(on)
+  await start($)
+  const loaded = box.value
+  box.value = toStoreValue({ ...defaultSwitches(), redaction: false, 'self-protection': false })
+  clear()
+  await $.classic.SessionStart({ source: 'clear' })
+  expect(box.logs).toContain(TAMPER_NOTICE)
+  expect(box.value).toEqual(loaded)
+})
+
 test('startup and compaction raise SessionStart but reset nothing, so the switches are not checked or named again', async ($, on) => {
   const box = owner(on, toStoreValue({ ...defaultSwitches(), taint: false }))
   sessionStubs(on, '9.9.9')
@@ -774,8 +788,27 @@ test('self-protection: a settings Edit it cannot check is denied', async ($, on)
   owner(on)
   on('tool.call', () => ({ result: 'ok' }))
   settingsFile(on)
+  const unchecked = 'cannot be applied to the file'
   // The text to replace is not in the file, so the edit cannot be applied to judge it.
-  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"absent": 1', new_string: '"x": 2' })).deny).toContain('settings')
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"absent": 1', new_string: '"x": 2' })).deny).toContain(unchecked)
+  // replace_all of text that is not there would leave the file as it is, but
+  // the Edit itself cannot be applied: denied the same way.
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"absent": 1', new_string: '"x": 2', replace_all: true })).deny).toContain(unchecked)
+  // A MultiEdit with no edit list has nothing to apply.
+  expect((await $.tool.call({ tool: 'MultiEdit', file_path: SETTINGS_FILE, edits: [] } as any)).deny).toContain(unchecked)
+})
+
+test('self-protection: an Edit that cannot be applied as written is denied, even over a settings file with none of this plugin\'s entries', async ($, on) => {
+  owner(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  // A file with none of this plugin's entries, so only the Edit check can deny.
+  settingsFile(on, JSON.stringify({ model: 'a' }, null, 2))
+  const unchecked = 'cannot be applied to the file'
+  // An empty old_string only creates a file; over a file with text the Edit
+  // cannot be applied, so it is not judged as if it rewrote the whole file.
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '', new_string: JSON.stringify({ model: 'b' }, null, 2) })).deny).toContain(unchecked)
+  // An Edit with no new_string is malformed: nothing says what the file becomes.
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"model": "a"' } as any)).deny).toContain(unchecked)
 })
 
 test('self-protection: a settings file it cannot read denies the Edit', async ($, on) => {
