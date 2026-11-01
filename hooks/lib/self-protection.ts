@@ -67,10 +67,25 @@ export function configDirFromRoot(root: unknown): string | null {
   return null
 }
 
-// A mention of this plugin or of a marketplace it is protected under.
+// Whether a name occurs in a folded text as a whole name: not inside a longer name
+// made of letters, digits, dot, dash or underscore (review R5: a marketplace called
+// local was found in settings.local.json). A .git suffix still ends the name, as
+// in a repository URL.
+const NAME_CHAR = /[a-z0-9._-]/
+function namesWhole(text: string, name: string): boolean {
+  for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+    const before = at > 0 ? (text[at - 1] as string) : ''
+    const after = text.slice(at + name.length)
+    const endsName = after === '' || !NAME_CHAR.test(after[0] as string) || /^\.git(?![a-z0-9_-])/.test(after)
+    if (!NAME_CHAR.test(before) && endsName) return true
+  }
+  return false
+}
+
+// A mention of this plugin or of a marketplace it is protected under, as a whole name.
 function mentionsUs(text: string): boolean {
   const folded = text.toLowerCase()
-  return folded.includes(PROTECTED_PLUGIN) || [...marketplaces].some((m) => folded.includes(m))
+  return namesWhole(folded, PROTECTED_PLUGIN) || [...marketplaces].some((m) => namesWhole(folded, m))
 }
 
 // Settings keys that turn this mod off without naming it: disableAllHooks stops

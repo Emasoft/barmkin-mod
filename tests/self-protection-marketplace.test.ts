@@ -8,6 +8,7 @@ import {
   protectedEntries,
   protectedPathKind,
   shellSelfProtectionReason,
+  mcpSelfProtectionReason,
 } from '../hooks/lib/self-protection'
 
 test('the marketplace is read from an installed copy\'s folder, and from no other folder', () => {
@@ -30,4 +31,18 @@ test('a marketplace added at session start is protected like the published one',
   // A name that is not a plain marketplace name is ignored.
   protectMarketplace('a b|.*')
   expect(shellSelfProtectionReason('claude plugin marketplace remove x')).toBeNull()
+})
+
+// Review R5 of the 0.3.0 fix round: a marketplace name is matched as a whole name,
+// so a copy installed from a marketplace with a common name (local) does not turn
+// every mention of settings.local.json or localhost into a mention of this plugin.
+test('a marketplace name counts only as a whole name, not inside a longer one', () => {
+  protectMarketplace('local')
+  expect(shellSelfProtectionReason('cat .claude/settings.local.json')).toBeNull()
+  expect(shellSelfProtectionReason('grep localhost .claude/settings.json')).toBeNull()
+  expect(mcpSelfProtectionReason(['/h/.claude/settings.local.json', 'list the keys'])).toBeNull()
+  // A whole name still counts, as the marketplace itself or in a repository URL.
+  expect(shellSelfProtectionReason('claude plugin marketplace remove local') ?? 'allowed').toContain('barmkin-mod:')
+  expect(mcpSelfProtectionReason(['/h/.claude/settings.json', 'add github.com/Emasoft/emasoft-barmkin.git']) ?? 'allowed').toContain('barmkin-mod:')
+  expect(mcpSelfProtectionReason(['/h/.claude/settings.json', 'drop barmkin-mod@local']) ?? 'allowed').toContain('barmkin-mod:')
 })
