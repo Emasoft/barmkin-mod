@@ -47,7 +47,7 @@ export function marketplaceFromRoot(root: unknown): string | null {
   if (typeof root !== 'string') return null
   const segments = root.replace(/\\/g, '/').split('/').filter(Boolean)
   for (let i = 0; i + 3 < segments.length; i++) {
-    if (segments[i] === 'plugins' && segments[i + 1] === 'cache' && segments[i + 3] === PROTECTED_PLUGIN) return segments[i + 2]
+    if (segments[i] === 'plugins' && segments[i + 1] === 'cache' && segments[i + 3] === PROTECTED_PLUGIN) return segments[i + 2] ?? null
   }
   return null
 }
@@ -189,7 +189,7 @@ function globCouldNameStore(token: string): boolean {
 function redirectTargets(command: string): string[] {
   const out: string[] = []
   for (const m of command.matchAll(/(?:>>?|&>|>&|>\|)\s*("[^"]*"|'[^']*'|[^\s;&|()<>]+)/g)) {
-    const target = m[1].replace(/^["']|["']$/g, '')
+    const target = (m[1] ?? '').replace(/^["']|["']$/g, '')
     if (!target.startsWith('/dev/')) out.push(target)
   }
   return out
@@ -218,7 +218,7 @@ const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pw
 // The files a shell command may write, move or remove, as spelled in it.
 function writtenPaths(command: string): string[] {
   const out = redirectTargets(command)
-  for (const [head, ...args] of shellSegments(command)) {
+  for (const [head = '', ...args] of shellSegments(command)) {
     const files = args.filter((a) => !a.startsWith('-'))
     if (ALL_ARG_WRITERS.has(head)) out.push(...files)
     else if (LAST_ARG_WRITERS.has(head)) out.push(...files.slice(-1))
