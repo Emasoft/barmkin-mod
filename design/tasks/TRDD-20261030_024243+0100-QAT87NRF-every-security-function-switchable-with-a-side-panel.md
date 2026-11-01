@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-11-01T04:47:43+0100
+updated: 2026-11-01T04:54:05+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -26,8 +26,9 @@ implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 8
 - Released: 0.3.0 is pushed to main at 9a2fb98 (a fast-forward) and installed at user scope, 0.2.2 to 0.3.0; a Claude Code restart applies it. The push went through the bypass of the ruleset protect-main-owner-and-bots, which is active on the default branch with the rules deletion, non_fast_forward, update and pull_request, and whose one bypass actor is a repository role in mode always (read 2026-11-01). Without that bypass, main takes changes only through a pull request.
 - CI: GitHub Actions has never run on this repository (actions/runs total_count 0, read 2026-11-01), although Actions is enabled and ci.yml triggers on push to main and on pull_request. The only check on 9a2fb98 is Socket Security: Project Report (success), and the commit has no statuses. The test evidence for 0.3.0 is the local runs of the review round (claude plugin test 643 pass, 0 fail, with OPENROUTER_API_KEY unset and set to a placeholder).
 - The step-1 review (REVISE: 2 major, 5 minor, 3 nit) is answered by the commits dce355a to 9a2fb98, listed in implementation-commits.
-- Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits). Nothing else is open.
-- NEXT ACTION: the owner runs the Desktop check and ticks box 4; the card can then close.
+- Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits).
+- Open: a second review, of the fix round dce355a to 9a2fb98 (2026-11-01), returned REVISE. R1 (major): on a case-insensitive volume a case spelling (Settings.json, .CLAUDE, plugins/CACHE) passes every path rule, which compare exact case. R2 (major): a hard link gives the settings file a second name that the file tools do not resolve, so ln followed by an Edit of the link changes settings in two calls. R3 to R5 (minor): read-only inline code and a command with sed -i anywhere are denied as settings writes; rm -rf of any folder named .claude is denied, temp homes included; marketplace names are matched as substrings. R6 (nit): ed, ex, vim -es, gawk -i inplace and plutil are writers the shell rule does not know. None is fixed yet; the reviewer's probes are the only evidence so far.
+- NEXT ACTION: fix or reject R1 to R6, each with a test that is red before the fix, on a branch that lands through a pull request; then the owner runs the Desktop check and ticks box 4, and the card can close.
 
 ## Goal
 
