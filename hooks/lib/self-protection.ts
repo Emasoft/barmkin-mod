@@ -27,7 +27,7 @@ const SETTINGS_BASENAMES: readonly string[] = [
   'installed_plugins.json',
   'known_marketplaces.json',
 ]
-const SETTINGS_MENTION = /settings(?:\.local)?\.json|managed-settings\.json|installed_plugins\.json|known_marketplaces\.json|enabledPlugins|extraKnownMarketplaces/
+const SETTINGS_MENTION = /settings(?:\.local)?\.json|managed-settings\.json|installed_plugins\.json|known_marketplaces\.json|enabledPlugins|extraKnownMarketplaces/i
 // The marketplaces this plugin is protected under: the one it is published in,
 // and the one the running copy was installed from (protectMarketplace, called by
 // register.ts at session start), which differs for a copy installed from
@@ -37,7 +37,7 @@ const marketplaces = new Set<string>([PROTECTED_MARKETPLACE])
 // Adds the marketplace a running copy came from. A name that is not a plain
 // marketplace name (letters, digits, dot, dash, underscore) is ignored.
 export function protectMarketplace(name: string): void {
-  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) marketplaces.add(name)
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) marketplaces.add(name.toLowerCase())
 }
 
 // The marketplace of an installed copy, from its folder
@@ -52,9 +52,40 @@ export function marketplaceFromRoot(root: unknown): string | null {
   return null
 }
 
-// A mention of this plugin or of a marketplace it is protected under.
+// The configuration folder of an installed copy, from its folder
+// (`<config>/plugins/cache/<marketplace>/barmkin-mod/<version>`), or null for a
+// copy anywhere else.
+export function configDirFromRoot(root: unknown): string | null {
+  if (typeof root !== 'string') return null
+  const absolute = root.startsWith('/')
+  const segments = root.replace(/\\/g, '/').split('/').filter(Boolean)
+  for (let i = 0; i + 3 < segments.length; i++) {
+    if (segments[i] === 'plugins' && segments[i + 1] === 'cache' && segments[i + 3] === PROTECTED_PLUGIN) {
+      return (absolute ? '/' : '') + segments.slice(0, i).join('/')
+    }
+  }
+  return null
+}
+
+// Whether a name occurs in a folded text as a whole name: not inside a longer name
+// made of letters, digits, dot, dash or underscore (review R5: a marketplace called
+// local was found in settings.local.json). A .git suffix still ends the name, as
+// in a repository URL.
+const NAME_CHAR = /[a-z0-9._-]/
+function namesWhole(text: string, name: string): boolean {
+  for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+    const before = at > 0 ? (text[at - 1] as string) : ''
+    const after = text.slice(at + name.length)
+    const endsName = after === '' || !NAME_CHAR.test(after[0] as string) || /^\.git(?![a-z0-9_-])/.test(after)
+    if (!NAME_CHAR.test(before) && endsName) return true
+  }
+  return false
+}
+
+// A mention of this plugin or of a marketplace it is protected under, as a whole name.
 function mentionsUs(text: string): boolean {
-  return text.includes(PROTECTED_PLUGIN) || [...marketplaces].some((m) => text.includes(m))
+  const folded = text.toLowerCase()
+  return namesWhole(folded, PROTECTED_PLUGIN) || [...marketplaces].some((m) => namesWhole(folded, m))
 }
 
 // Settings keys that turn this mod off without naming it: disableAllHooks stops
@@ -66,7 +97,7 @@ const HOOKS_OFF_KEYS: readonly string[] = ['disableAllHooks', 'allowManagedHooks
 // The keys of the settings that enable plugins or turn hooks off: what a shell
 // or MCP write of a settings file is known by when its path does not show the
 // file is Claude Code's.
-const SETTINGS_KEY_MENTION = /enabledPlugins|extraKnownMarketplaces|disableAllHooks|allowManagedHooksOnly|allowManagedModsOnly/
+const SETTINGS_KEY_MENTION = /enabledPlugins|extraKnownMarketplaces|disableAllHooks|allowManagedHooksOnly|allowManagedModsOnly/i
 // Settings file names no other program uses.
 const CLAUDE_ONLY_BASENAMES: readonly string[] = ['managed-settings.json', 'installed_plugins.json', 'known_marketplaces.json']
 
@@ -79,6 +110,25 @@ function storeFileSamples(): string[] {
 }
 
 export type ProtectedKind = 'store' | 'install' | 'marketplace'
+
+// Paths and commands are compared case-folded (review R1 of the 0.3.0 fix round):
+// the default volumes of macOS and Windows are case-insensitive, so
+// ~/.claude/Settings.json and ~/.CLAUDE are the same files as their lower-case
+// spelling, and RM or CLAUDE run the same programs. Resolving does not help, as
+// FsStat.realPath keeps the spelling of a case alias. On a case-sensitive volume
+// a name that differs only in case is protected too: a denial that costs little.
+function fold(path: string): string {
+  return path.replace(/\\/g, '/').toLowerCase()
+}
+
+// A shell command folded for comparison: every word lower-cased except an option
+// (a word that starts with -), whose letters can change what the command does:
+// cp -L copies through a link and cp -l makes one; yq -I sets the indent and yq -i
+// edits in place (Greptile on PR #1). A path inside an option (--x=PATH) needs no
+// folding here, as every path rule folds the token itself (fold).
+function foldCommand(raw: string): string {
+  return raw.replace(/\S+/g, (word) => (word.startsWith('-') ? word : word.toLowerCase()))
+}
 
 function hasGlob(segment: string): boolean {
   return /[*?[]/.test(segment)
@@ -110,7 +160,7 @@ export function basenameOf(path: string): string {
 // absolute, `~` and relative spellings alike, because it reads the trailing
 // `plugins/<kind>/<name>` part, not the configuration folder in front of it.
 export function protectedPathKind(path: string): ProtectedKind | null {
-  const segments = path.replace(/\\/g, '/').split('/').filter((s) => s.length > 0 && s !== '.')
+  const segments = fold(path).split('/').filter((s) => s.length > 0 && s !== '.')
   for (let i = 0; i + 2 < segments.length; i++) {
     if (segments[i] !== 'plugins') continue
     const area = segments[i + 1] ?? ''
@@ -162,7 +212,7 @@ const REMOVAL_COMMANDS: ReadonlySet<string> = new Set(['rm', 'rmdir', 'mv', 'unl
 // Only under a folder named .claude, so a project's own plugins folder is not
 // mistaken for it.
 export function isProtectedAncestor(path: string): boolean {
-  const segments = path.replace(/\\/g, '/').split('/').filter((s) => s.length > 0 && s !== '.')
+  const segments = fold(path).split('/').filter((s) => s.length > 0 && s !== '.')
   const last = segments[segments.length - 1] ?? ''
   const prev = segments[segments.length - 2] ?? ''
   const prevPrev = segments[segments.length - 3] ?? ''
@@ -174,13 +224,13 @@ export function isProtectedAncestor(path: string): boolean {
 // A token naming the plugin store folder itself (`…/plugins/store`), which holds
 // the switch store beside other plugins' stores, in any spelling.
 function namesStoreFolder(token: string): boolean {
-  const segments = token.replace(/\\/g, '/').split('/').filter((s) => s.length > 0 && s !== '.')
+  const segments = fold(token).split('/').filter((s) => s.length > 0 && s !== '.')
   return segments[segments.length - 1] === 'store' && segments[segments.length - 2] === 'plugins'
 }
 
 // A glob that could match the switch store's file name (`barmkin*`, `*.json`, `*`).
 function globCouldNameStore(token: string): boolean {
-  const base = basenameOf(token)
+  const base = basenameOf(fold(token))
   return hasGlob(base) && storeFileSamples().some((s) => globMatches(base, s))
 }
 
@@ -208,23 +258,83 @@ const ALL_ARG_WRITERS: ReadonlySet<string> = new Set([
   'copy-item',
   'move-item',
   'remove-item',
+  // Editors that take their commands from a flag or from stdin (review R6).
+  'ed',
+  'ex',
+  'vi',
+  'vim',
+  'nvim',
 ])
 const LAST_ARG_WRITERS: ReadonlySet<string> = new Set(['cp', 'install', 'ln', 'rsync'])
-// An in-place sed, perl or yq, and an interpreter running inline code: which
-// file they write cannot be read from the text, so every file named counts.
-const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b/
-const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/
+// An in-place sed, perl, yq or gawk (-i inplace), and an interpreter running inline
+// code: which file they write cannot be read from the text, so every file named counts.
+// Option letters arrive as typed (foldCommand): BSD sed edits in place with -I too,
+// while perl -I names an include folder and yq -I an indent. INLINE_CODE ignores
+// case, as PowerShell takes -Command in any case and perl -E runs code like -e.
+const IN_PLACE = /\bsed\b[^|;&]*\s-[a-zA-Z]*I\b|\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/
+const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/i
+
+// A command split at the shell separators (|, ||, &, &&, ;, a newline) that stand
+// outside quotes, so the code of an interpreter one-liner or a sed script holding a
+// `;` stays one piece. shellSegments splits at every separator, quoted or not, which
+// would cut the file a one-liner names away from its interpreter. It keeps the
+// in-place and inline-code widening to its own segment (review R3).
+function quotedSegments(command: string): string[] {
+  const out: string[] = []
+  let current = ""
+  let quote: string | null = null
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string
+    if (c === "\\" && quote !== "\x27" && i + 1 < command.length) {
+      current += c + command[i + 1]
+      i++
+      continue
+    }
+    if (quote) {
+      if (c === quote) quote = null
+      current += c
+      continue
+    }
+    if (c === "\x27" || c === "\"") quote = c
+    if (c === "|" || c === "&" || c === ";" || c === "\n") {
+      out.push(current)
+      current = ""
+      continue
+    }
+    current += c
+  }
+  out.push(current)
+  return out.filter((s) => s.trim() !== "")
+}
+
+// Every segment of a command as [head, ...args], read two ways: by shellSegments,
+// which also looks into $(...) and bash -c, and by quotedSegments, which does not
+// cut at a separator inside quotes. shellSegments alone loses the file after a
+// quoted script that holds a | or a ; (ex -sc '%s/a/b/|wq' <file>, review R6). A
+// path either reading finds counts, which can only add a denial.
+function commandSegments(command: string): string[][] {
+  const quoted = quotedSegments(command).map((segment) => {
+    const words = shellTokens(segment)
+    return words.length === 0 ? [] : [basenameOf(words[0] as string).toLowerCase(), ...words.slice(1)]
+  })
+  return [...shellSegments(command), ...quoted.filter((words) => words.length > 0)]
+}
 
 // The files a shell command may write, move or remove, as spelled in it.
 function writtenPaths(command: string): string[] {
   const out = redirectTargets(command)
-  for (const [head = '', ...args] of shellSegments(command)) {
+  for (const [head = '', ...args] of commandSegments(command)) {
     const files = args.filter((a) => !a.startsWith('-'))
     if (ALL_ARG_WRITERS.has(head)) out.push(...files)
     else if (LAST_ARG_WRITERS.has(head)) out.push(...files.slice(-1))
     else if (head === 'dd') out.push(...args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)))
+    // plutil writes the file it names when it replaces, inserts, removes, converts or
+    // creates; -p and -lint only read (review R6).
+    else if (head === 'plutil' && args.some((a) => /^-(?:replace|insert|remove|convert|create)$/.test(a))) out.push(...files.slice(-1))
   }
-  if (IN_PLACE.test(command) || INLINE_CODE.test(command)) out.push(...shellTokens(command))
+  for (const segment of quotedSegments(command)) {
+    if (IN_PLACE.test(segment) || INLINE_CODE.test(segment)) out.push(...shellTokens(segment))
+  }
   return out
 }
 
@@ -232,7 +342,8 @@ function writtenPaths(command: string): string[] {
 // or a name only Claude Code uses.
 function isClaudeSettingsPath(path: string): boolean {
   if (!isSettingsFile(path)) return false
-  return path.replace(/\\/g, '/').split('/').includes('.claude') || CLAUDE_ONLY_BASENAMES.includes(basenameOf(path))
+  const folded = fold(path)
+  return folded.split('/').includes('.claude') || CLAUDE_ONLY_BASENAMES.includes(basenameOf(folded))
 }
 
 // Whether a shell command writes, moves or removes a Claude Code settings file.
@@ -254,8 +365,24 @@ function changesFiles(command: string): boolean {
   return FIND_ACTIONS.test(command) || writtenPaths(command).length > 0
 }
 
+// Whether a command makes a link: ln or link, cp with -l or --link (cp -al
+// too), or rsync --link-dest. The command arrives folded with its option letters as
+// typed (foldCommand), so cp -L, which copies through a link, is not cp -l.
+function makesLink(command: string): boolean {
+  for (const [head = '', ...args] of commandSegments(command)) {
+    const name = basenameOf(head)
+    if (name === 'ln' || name === 'link') return true
+    if (name === 'cp' && args.some((a) => a === '--link' || /^-[A-Za-z]*l[A-Za-z]*$/.test(a))) return true
+    if (name === 'rsync' && args.some((a) => a.startsWith('--link-dest'))) return true
+  }
+  return false
+}
+
 // Why a shell command (Bash, PowerShell, Monitor, an inline skill shell) is denied, or null.
-export function shellSelfProtectionReason(command: string): string | null {
+export function shellSelfProtectionReason(raw: string): string | null {
+  // Folded once here, so every rule below compares names and paths case-folded;
+  // option letters keep their case (see foldCommand).
+  const command = foldCommand(raw)
   const tokens = shellTokens(command)
   for (const token of tokens) {
     const kind = protectedPathKind(token)
@@ -263,6 +390,14 @@ export function shellSelfProtectionReason(command: string): string | null {
   }
   if (tokens.some((t) => REMOVAL_COMMANDS.has(basenameOf(t))) && tokens.some((t) => isProtectedAncestor(t))) {
     return denyReason('removes or moves a folder that holds barmkin-mod')
+  }
+  // A hard link gives a protected file a second name that the file tools never
+  // resolve (FsStat.realPath keeps the spelling of a hard link), so an Edit of the
+  // link would change the settings unseen (review R2). A link command naming a
+  // settings file or a folder that holds barmkin-mod is denied, a symbolic link
+  // too: denying one costs little, and such a link has no ordinary use.
+  if (makesLink(command) && tokens.some((t) => isSettingsFile(t) || isProtectedAncestor(t))) {
+    return denyReason('makes a second name (a link) for a file barmkin-mod protects')
   }
   // The store folder named without the file: a glob, a find or a copy into it
   // reaches the switch store without spelling the store file's name.
@@ -290,7 +425,7 @@ export function shellSelfProtectionReason(command: string): string | null {
 }
 
 export function isSettingsFile(path: string): boolean {
-  return SETTINGS_BASENAMES.includes(basenameOf(path))
+  return SETTINGS_BASENAMES.includes(basenameOf(path).toLowerCase())
 }
 
 function editStrings(tool: string, input: Record<string, unknown>): string[] {
@@ -357,8 +492,12 @@ export const SETTINGS_WRITE_REASON = denyReason("changes barmkin-mod's entries, 
 export const SETTINGS_EDIT_UNCHECKED_REASON = denyReason(
   'edits a settings file in a way that cannot be checked (the edit cannot be applied to the file as it is)',
 )
+// A file tool target that may be a hard link to a settings file (review R2).
+export const SETTINGS_LINK_REASON = denyReason(
+  'edits a file with the size and modification time of a Claude Code settings file, so it may be a second name (a hard link) for it',
+)
 const SHELL_SETTINGS_REASON = denyReason(
-  'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be)',
+  'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be; to only read the file, use cat or jq)',
 )
 
 export const SWITCH_COMMAND_REASON = denyReason('runs the ' + SWITCH_COMMAND + ' switch command')
@@ -383,7 +522,11 @@ export function protectedEntries(text: string): Map<string, string> | null {
     if (!value || typeof value !== 'object') return
     for (const [key, v] of Object.entries(value)) {
       const here = path + '/' + key
-      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || marketplaces.has(key) || HOOKS_OFF_KEYS.includes(key)) {
+      // A plugin or marketplace name is compared folded, as protectMarketplace keeps it
+      // (Greptile on PR #1: a key written SomeMarket must still count); the hooks-off
+      // keys are compared as written, since Claude Code reads settings keys exactly.
+      const name = key.toLowerCase()
+      if (name === PROTECTED_PLUGIN || name.startsWith(PROTECTED_PLUGIN + '@') || marketplaces.has(name) || HOOKS_OFF_KEYS.includes(key)) {
         entries.set(here, JSON.stringify(v))
       } else {
         walk(v, here)

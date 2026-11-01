@@ -110,6 +110,8 @@ import {
   inputStrings,
   SETTINGS_WRITE_REASON,
   SETTINGS_EDIT_UNCHECKED_REASON,
+  SETTINGS_LINK_REASON,
+  configDirFromRoot,
   editedText,
   SWITCH_COMMAND_REASON,
   mcpSelfProtectionReason,
@@ -1714,6 +1716,60 @@ async function currentText($: any, path: string): Promise<string | null> {
   return await $.fs.read(path)
 }
 
+// The settings files a hard link could give a second name: the user ones in the
+// configuration folder (an installed copy's own, else CLAUDE_CONFIG_DIR, else
+// ~/.claude) and the project ones under the working directory.
+async function linkableSettingsFiles($: any): Promise<string[]> {
+  const out: string[] = []
+  let config = configDirFromRoot($.plugin.root)
+  if (!config) {
+    const dir = await $.env.get('CLAUDE_CONFIG_DIR')
+    const home = await $.env.get('HOME')
+    config = typeof dir === 'string' && dir !== '' ? dir : typeof home === 'string' && home !== '' ? home + '/.claude' : null
+  }
+  if (config) {
+    const c = config.replace(/[\\/]+$/, '')
+    out.push(c + '/settings.json', c + '/settings.local.json', c + '/plugins/installed_plugins.json', c + '/plugins/known_marketplaces.json')
+  }
+  try {
+    const cwd = await $.session.cwd()
+    if (typeof cwd === 'string' && cwd !== '') {
+      const p = cwd.replace(/[\\/]+$/, '')
+      out.push(p + '/.claude/settings.json', p + '/.claude/settings.local.json')
+    }
+  } catch {
+    // no working directory
+  }
+  return out
+}
+
+async function statOrNull($: any, path: string): Promise<any> {
+  try {
+    return await $.fs.stat(path, { resolve: false })
+  } catch {
+    return null
+  }
+}
+
+// Whether a file tool's target may be a hard link to a settings file. A hard link
+// keeps its own spelling (FsStat.realPath does not resolve one) and FsStat holds
+// no inode, but both names share the size and the modification time, so a target
+// that matches a settings file on both counts as one (review R2). A copy made with
+// cp -p matches too: a denial that costs little.
+async function mayBeSettingsLink($: any, spellings: readonly string[]): Promise<boolean> {
+  let target: any = null
+  for (const s of spellings) {
+    target = await statOrNull($, s)
+    if (target) break
+  }
+  if (!target || target.kind !== 'file') return false
+  for (const path of await linkableSettingsFiles($)) {
+    const s = await statOrNull($, path)
+    if (s && s.kind === 'file' && s.size === target.size && s.mtimeMs === target.mtimeMs) return true
+  }
+  return false
+}
+
 async function selfProtectionReason($: any, e: any): Promise<string | null> {
   const tool = typeof e.tool === 'string' ? e.tool : ''
   if (COMMAND_TOOLS.includes(tool)) return typeof e.command === 'string' ? shellSelfProtectionReason(e.command) : null
@@ -1726,6 +1782,9 @@ async function selfProtectionReason($: any, e: any): Promise<string | null> {
       const reason = fileSelfProtectionReason(tool, e, path)
       if (reason) return reason
     }
+    // A hard link to a settings file keeps its own spelling, so no rule above
+    // recognises it (review R2); mayBeSettingsLink compares what both names share.
+    if (!spellings.some((p) => isSettingsFile(p)) && (await mayBeSettingsLink($, spellings))) return SETTINGS_LINK_REASON
     // An Edit is judged as the Write it amounts to: its edits applied to the
     // current text, then the same entry diff. Matching the edit strings alone
     // (fileSelfProtectionReason) let a one-key edit through: a

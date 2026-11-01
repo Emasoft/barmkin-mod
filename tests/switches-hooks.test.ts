@@ -832,3 +832,21 @@ test('self-protection follows a symbolic link to the store', async ($, on) => {
   on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: 2, mtimeMs: 0, isLink: true, realPath: e.path === '/proj/link.json' ? STORE_FILE : e.path } }))
   expect((await $.tool.call({ tool: 'Write', file_path: '/proj/link.json', content: '{}' })).deny).toContain('switch store')
 })
+
+// Review R2: a hard link to a settings file keeps its own spelling and FsStat has no
+// inode, but both names share the size and the modification time.
+test("self-protection: an Edit of a file with the size and time of a settings file is denied; another file runs", async ($, on) => {
+  owner(on)
+  on("tool.call", () => ({ result: "ok" }))
+  settingsFile(on)
+  on("session.cwd", () => ({ value: "/proj" }))
+  on("fs.stat", (_$: any, e: any) => {
+    const path = String(e.path)
+    if (path.endsWith("/settings.json") || path === "/tmp/s.json") return { value: { kind: "file", size: 120, mtimeMs: 1000, isLink: false } }
+    if (path === "/tmp/other.json") return { value: { kind: "file", size: 120, mtimeMs: 2000, isLink: false } }
+    throw new Error("ENOENT")
+  })
+  const edit = (file_path: string) => $.tool.call({ tool: "Edit", file_path, old_string: "\"model\": \"a\"", new_string: "\"model\": \"a\", \"disableAllHooks\": true" })
+  expect((await edit("/tmp/s.json")).deny).toContain("hard link")
+  expect((await edit("/tmp/other.json")).deny).toBeUndefined()
+})

@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-11-01T04:30:59+0100
+updated: 2026-11-01T07:36:01+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -16,10 +16,21 @@ approved: true
 approval-judge: main-agent@barmkin-mod
 approval-datetime: 2026-10-30T02:42:43+0100
 release-via: none
-implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c]
+implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b, b2e7409, dc429a1, b5cfee6, f374056, 291880c, 32fb6df, 33dffc8, 5dac373, 3d90219, 3887cbb, a2088b1, 0289846, 6a218c9, 25f1a13, 9b26287, 5896a95, e890773, 2dbf7d1, e5be0c4]
 ---
 
 # Every security function switchable, with a side panel
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-11-01
+
+- Released: 0.3.0 is pushed to main at 9a2fb98 (a fast-forward) and installed at user scope, 0.2.2 to 0.3.0; a Claude Code restart applies it. The push went through the bypass of the ruleset protect-main-owner-and-bots, which is active on the default branch with the rules deletion, non_fast_forward, update and pull_request, and whose one bypass actor is a repository role in mode always (read 2026-11-01). Without that bypass, main takes changes only through a pull request.
+- CI: GitHub Actions has never run on this repository (actions/runs total_count 0, read 2026-11-01), although Actions is enabled and ci.yml triggers on push to main and on pull_request. The only check on 9a2fb98 is Socket Security: Project Report (success), and the commit has no statuses. The test evidence for 0.3.0 is the local runs of the review round (claude plugin test 643 pass, 0 fail, with OPENROUTER_API_KEY unset and set to a placeholder).
+- The step-1 review (REVISE: 2 major, 5 minor, 3 nit) is answered by the commits dce355a to 9a2fb98, listed in implementation-commits.
+- Open: acceptance box 4, the panel on the terminal and in the Desktop app at a narrow and a wide width. It is the owner's Desktop check, and it also settles which origin the Desktop app gives a /barmkin-mod-rule typed there (Known limits).
+- The second review, of the fix round dce355a to 9a2fb98 (2026-11-01), returned REVISE: R1 and R2 major (a case spelling passed every path rule; a hard link gave the settings file a second name), R3 to R5 minor (reads denied as writes; rm -rf of a temp .claude denied; marketplace names matched as substrings), R6 nit (writers the shell rule did not know).
+- Answered: the fix-round review (2026-11-01, REVISE) on branch fix/qat87nrf-case-and-hardlink, version 0.3.1. R1 fixed (32fb6df); R2 fixed in the shell (33dffc8) and for the file tools by size and modification time (5dac373); R3 fixed (3d90219); R5 fixed (3887cbb); R6 fixed (a2088b1); R4 rejected, with the reason in Known limits; README and version in 0289846. The orchestrator pushed the branch as PR #1, so CI runs on it.
+- PR #1 (Emasoft/barmkin-mod, opened by the orchestrator, not merged) got two Greptile findings, both verified by reading and by a red test: a settings Write could drop the entry of a marketplace registered with capitals, since protectMarketplace keeps names lower-cased but protectedEntries compared JSON keys as written (fixed in 9b26287); and the whole-command fold turned cp -L into cp -l (and yq -I, perl -I into in-place edits), so a plain backup of a settings file was denied ((fixed in 5896a95 and e5be0c4, option letters keep their case, BSD sed -I named)). A missing test found by the mutation check was added in 25f1a13; README in e890773 and 2dbf7d1.
+- NEXT ACTION: the PR branch is re-pushed with these commits; the orchestrator reads its checks and merges; then the owner runs the Desktop check and ticks box 4, and the card can close.
 
 ## Goal
 
@@ -59,6 +70,11 @@ Every security function barmkin-mod has today gets its own named switch, on by d
 - Found in the step-1 review (round 2): a child session started with `claude --safe-mode -p` or `claude --bare -p` runs no installed mod; self-protection does not stop it (a permission rule that denies those commands can).
 - Found in the step-1 review (round 2): which origin the Desktop app gives a command typed there is not measured (owner's Desktop check, box 4). Another plugin cannot rewrite the origin: the engine skips a hook that passes on an origin it did not set (measured with the test kit).
 - Found in the step-1 review (round 2): a --plugin-dir copy is not protected by path, since its folder is the developer's working tree. An installed copy is protected under the marketplace its folder names and under emasoft-barmkin.
+- Found in the fix-round review (R1): names are compared case-folded, because the default macOS and Windows volumes are case-insensitive and FsStat.realPath keeps the spelling of a case alias. On a case-sensitive volume a name that differs only in case is protected too.
+- Found in the fix-round review (R2): a hard link is a second name the file tools do not resolve, and FsStat holds no inode or link count. Making a link to a settings file or into a folder that holds barmkin-mod is denied in the shell; a Write or an Edit of an existing file with the size and modification time of a user or project settings file is denied (a cp -p copy too). Open: a hard link made another way to the switch store or to a file of the installed copy.
+- Found in the fix-round review (R4, rejected): rm -rf of a folder named .claude stays denied under a temp root (/tmp, /var/folders), because the shell rule cannot tell a temporary home from a configuration folder that CLAUDE_CONFIG_DIR puts there, or from a project-scope install in a temp project. The cost is one cleanup the person runs.
+- Found in the fix-round review (R6): the writers the shell rule knows are listed in the README Limits; a program not named there, or a script file, is not recognised.
+- Found in the Greptile review of PR #1: a shell command is folded except its option letters, whose case can change what a command does (cp -L reads through a link, cp -l makes one). Inline code is still matched in any option case (PowerShell -Command, perl -E), so python3 -E beside a settings file is denied as inline code: accepted.
 
 ## Acceptance
 
