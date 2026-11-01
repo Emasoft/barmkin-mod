@@ -1,15 +1,18 @@
 // Pure logic for the self-protection switch: which tool calls target this mod's
 // own switch store, its installed copy or marketplace clone, its settings
-// entries, its uninstall, or its switch command. No `$` use here: register.ts
-// resolves paths, reads the current settings file for a Write, and denies.
+// entries or the settings keys that turn hooks off, its uninstall, or its switch
+// command. No `$` use here: register.ts resolves paths, reads the current
+// settings file for a Write or an Edit, and denies.
 //
 // Deny only. A call this file does not recognise is left to every other guard.
 // Like the egress classes, this reads command text, not a parsed shell: a path
 // put together from pieces (a `cd` first, a variable, an encoding), a
-// configuration folder not named .claude, or a removal through a tool other
-// than the usual commands (rm, mv, rmdir, unlink, trash, shred) is not
-// recognised. The switch store's tamper check (switches.ts, checkStore) is the
-// second line for the store.
+// configuration folder not named .claude, or a removal or write through a tool
+// other than the usual commands (rm, mv, cp, tee, a redirection, an in-place
+// sed or perl, an interpreter's inline code) is not recognised. The switch
+// store's tamper check (switches.ts, checkStore) is the second line for the store.
+
+import { shellSegments } from './egress'
 
 export const PROTECTED_PLUGIN = 'barmkin-mod'
 export const PROTECTED_MARKETPLACE = 'emasoft-barmkin'
@@ -26,6 +29,18 @@ const SETTINGS_BASENAMES: readonly string[] = [
 ]
 const SETTINGS_MENTION = /settings(?:\.local)?\.json|managed-settings\.json|installed_plugins\.json|known_marketplaces\.json|enabledPlugins|extraKnownMarketplaces/
 const MENTIONS_US = /barmkin-mod|emasoft-barmkin/
+// Settings keys that turn this mod off without naming it: disableAllHooks stops
+// every installed mod (from any settings file), allowManagedHooksOnly and
+// allowManagedModsOnly every mod the organization does not manage. Any change to
+// one counts, removing it included: denying a harmless change costs less than
+// telling it apart from a harmful one.
+const HOOKS_OFF_KEYS: readonly string[] = ['disableAllHooks', 'allowManagedHooksOnly', 'allowManagedModsOnly']
+// The keys of the settings that enable plugins or turn hooks off: what a shell
+// or MCP write of a settings file is known by when its path does not show the
+// file is Claude Code's.
+const SETTINGS_KEY_MENTION = /enabledPlugins|extraKnownMarketplaces|disableAllHooks|allowManagedHooksOnly|allowManagedModsOnly/
+// Settings file names no other program uses.
+const CLAUDE_ONLY_BASENAMES: readonly string[] = ['managed-settings.json', 'installed_plugins.json', 'known_marketplaces.json']
 
 // The store file is `<plugin>_<marketplace>-<hash>.json` (`inline` for a --plugin-dir
 // copy), whose hash part is not knowable here, so a glob is tested against these shapes.
@@ -127,6 +142,69 @@ export function isProtectedAncestor(path: string): boolean {
   return prev === 'plugins' && prevPrev === '.claude' && (segmentNames(last, 'cache') || segmentNames(last, 'marketplaces'))
 }
 
+// Redirection targets in a command (`> f`, `>> f`, `&> f`, `>| f`), quotes
+// removed. The /dev streams (`2>/dev/null`) are not files.
+function redirectTargets(command: string): string[] {
+  const out: string[] = []
+  for (const m of command.matchAll(/(?:>>?|&>|>&|>\|)\s*("[^"]*"|'[^']*'|[^\s;&|()<>]+)/g)) {
+    const target = m[1].replace(/^["']|["']$/g, '')
+    if (!target.startsWith('/dev/')) out.push(target)
+  }
+  return out
+}
+
+// Commands that write, move or remove every file they name, and those that
+// write only the last one (the destination).
+const ALL_ARG_WRITERS: ReadonlySet<string> = new Set([
+  ...REMOVAL_COMMANDS,
+  'tee',
+  'sponge',
+  'truncate',
+  'set-content',
+  'add-content',
+  'out-file',
+  'copy-item',
+  'move-item',
+  'remove-item',
+])
+const LAST_ARG_WRITERS: ReadonlySet<string> = new Set(['cp', 'install', 'ln', 'rsync'])
+// An in-place sed, perl or yq, and an interpreter running inline code: which
+// file they write cannot be read from the text, so every file named counts.
+const IN_PLACE = /\b(?:sed|perl|yq)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b/
+const INLINE_CODE = /\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun|osascript|pwsh|powershell)\b[^|;&]*\s(?:-c|-e|-r|--eval|-Command)(?:\s|$)/
+
+// The files a shell command may write, move or remove, as spelled in it.
+function writtenPaths(command: string): string[] {
+  const out = redirectTargets(command)
+  for (const [head, ...args] of shellSegments(command)) {
+    const files = args.filter((a) => !a.startsWith('-'))
+    if (ALL_ARG_WRITERS.has(head)) out.push(...files)
+    else if (LAST_ARG_WRITERS.has(head)) out.push(...files.slice(-1))
+    else if (head === 'dd') out.push(...args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)))
+  }
+  if (IN_PLACE.test(command) || INLINE_CODE.test(command)) out.push(...shellTokens(command))
+  return out
+}
+
+// A settings file whose path shows it is Claude Code's: under a .claude folder,
+// or a name only Claude Code uses.
+function isClaudeSettingsPath(path: string): boolean {
+  if (!isSettingsFile(path)) return false
+  return path.replace(/\\/g, '/').split('/').includes('.claude') || CLAUDE_ONLY_BASENAMES.includes(basenameOf(path))
+}
+
+// Whether a shell command writes, moves or removes a Claude Code settings file.
+// A Write or an Edit is compared against the file (writeChangesProtectedEntries);
+// a shell write cannot be, so every such write counts, whatever it names: a jq
+// filter or a python one-liner can drop enabledPlugins or add disableAllHooks
+// without spelling this plugin. A bare settings.json (an editor's, or one
+// reached after a `cd`) counts beside a key of the settings that enable plugins
+// or turn hooks off. A read is never a write here.
+function shellWritesSettings(command: string): boolean {
+  const written = writtenPaths(command).filter((p) => isSettingsFile(p))
+  return written.some((p) => isClaudeSettingsPath(p)) || (written.length > 0 && SETTINGS_KEY_MENTION.test(command))
+}
+
 // Why a shell command (Bash, PowerShell, Monitor, an inline skill shell) is denied, or null.
 export function shellSelfProtectionReason(command: string): string | null {
   const tokens = shellTokens(command)
@@ -148,6 +226,7 @@ export function shellSelfProtectionReason(command: string): string | null {
     }
     if (command.includes(SWITCH_COMMAND)) return denyReason('runs the ' + SWITCH_COMMAND + ' switch command in another session')
   }
+  if (shellWritesSettings(command)) return SHELL_SETTINGS_REASON
   if (MENTIONS_US.test(command) && SETTINGS_MENTION.test(command)) return denyReason("touches barmkin-mod's entries in the settings files")
   return null
 }
@@ -176,10 +255,37 @@ function editStrings(tool: string, input: Record<string, unknown>): string[] {
   return out
 }
 
+// The text an Edit or MultiEdit leaves in a file whose current text is `text`
+// (null: no file), applied as the tool applies it: each old_string replaced by
+// its new_string, every occurrence under replace_all, edits in order, an empty
+// old_string creating the file. Null when an edit cannot be applied (the text to
+// replace is not there, a field is not a string): the edit cannot be judged.
+export function editedText(text: string | null, tool: string, input: Record<string, unknown>): string | null {
+  const edits: unknown[] = tool === 'Edit' ? [input] : tool === 'MultiEdit' && Array.isArray(input.edits) ? input.edits : []
+  if (edits.length === 0) return null
+  let out = text
+  for (const edit of edits) {
+    if (!edit || typeof edit !== 'object') return null
+    const { old_string: from, new_string: to, replace_all: all } = edit as Record<string, unknown>
+    if (typeof from !== 'string' || typeof to !== 'string') return null
+    if (from === '') {
+      if (out !== null && out !== '') return null
+      out = to
+      continue
+    }
+    if (out === null) return null
+    const at = out.indexOf(from)
+    if (at === -1) return null
+    out = all === true ? out.split(from).join(to) : out.slice(0, at) + to + out.slice(at + from.length)
+  }
+  return out
+}
+
 // Why a file-tool call (Write, Edit, MultiEdit, NotebookEdit) is denied, or null.
 // `path` is the target resolved against the working directory where it was
-// relative. A Write to a settings file is judged by writeChangesProtectedEntries,
-// which needs the file's current text, so it is not decided here.
+// relative. A Write or an Edit of a settings file is also judged by
+// writeChangesProtectedEntries, which needs the file's current text, so
+// register.ts decides that part.
 export function fileSelfProtectionReason(tool: string, input: Record<string, unknown>, path: string): string | null {
   const kind = protectedPathKind(path)
   if (kind) return denyReason('writes into ' + KIND_TEXT[kind])
@@ -189,14 +295,20 @@ export function fileSelfProtectionReason(tool: string, input: Record<string, unk
   return null
 }
 
-export const SETTINGS_WRITE_REASON = denyReason("rewrites barmkin-mod's entries in a settings file")
-
+export const SETTINGS_WRITE_REASON = denyReason("changes barmkin-mod's entries, or a setting that turns hooks off, in a settings file")
+export const SETTINGS_EDIT_UNCHECKED_REASON = denyReason(
+  'edits a settings file in a way that cannot be checked (the text to replace is not in the file)',
+)
+const SHELL_SETTINGS_REASON = denyReason(
+  'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be)',
+)
 
 export const SWITCH_COMMAND_REASON = denyReason('runs the ' + SWITCH_COMMAND + ' switch command')
 
 // Every entry under a key that names this plugin (`barmkin-mod`, `barmkin-mod@…`)
-// or its marketplace, anywhere in the JSON, as path -> JSON text. Null when the
-// text is not JSON.
+// or its marketplace, or turns hooks off (HOOKS_OFF_KEYS), anywhere in the JSON,
+// as path -> JSON text. The path is part of the entry, so an entry moved under
+// another key (a renamed enabledPlugins) is a change. Null when the text is not JSON.
 export function protectedEntries(text: string): Map<string, string> | null {
   let parsed: unknown
   try {
@@ -213,7 +325,7 @@ export function protectedEntries(text: string): Map<string, string> | null {
     if (!value || typeof value !== 'object') return
     for (const [key, v] of Object.entries(value)) {
       const here = path + '/' + key
-      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || key === PROTECTED_MARKETPLACE) {
+      if (key === PROTECTED_PLUGIN || key.startsWith(PROTECTED_PLUGIN + '@') || key === PROTECTED_MARKETPLACE || HOOKS_OFF_KEYS.includes(key)) {
         entries.set(here, JSON.stringify(v))
       } else {
         walk(v, here)
@@ -226,9 +338,10 @@ export function protectedEntries(text: string): Map<string, string> | null {
 
 // Whether a Write of `newText` over a settings file holding `oldText` (null when
 // the file does not exist) changes, adds or removes any entry of this plugin or
-// its marketplace. Fail closed: a current file that is not JSON cannot be
-// compared, so the write counts as a change; a new text that is not JSON counts
-// as one when the current file held an entry.
+// its marketplace, or a key that turns hooks off. An Edit is judged the same way,
+// on the text it leaves (editedText). Fail closed: a current file that is not
+// JSON cannot be compared, so the write counts as a change; a new text that is
+// not JSON counts as one when the current file held an entry.
 export function writeChangesProtectedEntries(oldText: string | null, newText: string): boolean {
   const before = oldText === null ? new Map<string, string>() : protectedEntries(oldText)
   if (before === null) return true
@@ -260,9 +373,12 @@ export function inputStrings(input: unknown): string[] {
 }
 
 // Why an MCP tool call is denied, or null, judged on every string of its input:
-// one that names a protected place, or a settings file named beside a mention of
-// this plugin or its marketplace. Narrower than the shell rule, because an MCP
-// input is often prose (an issue body, a message) rather than a command.
+// one that names a protected place, a settings file named beside a mention of
+// this plugin or its marketplace, or a Claude Code settings file named beside a
+// key of the settings that enable plugins or turn hooks off (an MCP write of
+// `{"disableAllHooks": true}` names no plugin). Narrower than the shell rule,
+// because an MCP input is often prose (an issue body, a message) rather than a
+// command.
 export function mcpSelfProtectionReason(strings: readonly string[]): string | null {
   for (const s of strings) {
     for (const token of shellTokens(s)) {
@@ -272,5 +388,9 @@ export function mcpSelfProtectionReason(strings: readonly string[]): string | nu
   }
   const namesSettings = strings.some((s) => shellTokens(s).some((t) => isSettingsFile(t)))
   if (namesSettings && strings.some((s) => MENTIONS_US.test(s))) return denyReason("touches barmkin-mod's entries in the settings files")
+  const namesClaudeSettings = strings.some((s) => shellTokens(s).some((t) => isClaudeSettingsPath(t)))
+  if (namesClaudeSettings && strings.some((s) => SETTINGS_KEY_MENTION.test(s))) {
+    return denyReason('touches the settings that enable plugins or turn hooks off in a Claude Code settings file')
+  }
   return null
 }

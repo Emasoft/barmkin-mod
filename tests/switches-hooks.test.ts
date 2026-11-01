@@ -641,12 +641,59 @@ test('self-protection: a settings file it cannot read denies the Write', async (
   expect((await $.tool.call({ tool: 'Write', file_path: '/h/.claude/settings.json', content: '{}' })).deny).toBeDefined()
 })
 
+// The current text of the user settings file in the settings Edit tests.
+const SETTINGS_FILE = '/h/.claude/settings.json'
+const SETTINGS_TEXT = JSON.stringify({ model: 'a', enabledPlugins: { 'barmkin-mod@emasoft-barmkin': true } }, null, 2)
+function settingsFile(on: any, text: string = SETTINGS_TEXT) {
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: text }))
+}
+
 test('self-protection: an Edit of this plugin\'s settings entry is denied; another settings edit runs', async ($, on) => {
   owner(on)
   on('tool.call', () => ({ result: 'ok' }))
-  const edit = (old_string: string, new_string: string) => $.tool.call({ tool: 'Edit', file_path: '/h/.claude/settings.json', old_string, new_string })
+  settingsFile(on)
+  const edit = (old_string: string, new_string: string) => $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string, new_string })
   expect((await edit('"barmkin-mod@emasoft-barmkin": true', '"barmkin-mod@emasoft-barmkin": false')).deny).toContain('settings')
   expect((await edit('"model": "a"', '"model": "b"')).deny).toBeUndefined()
+})
+
+test('self-protection: a settings Edit or MultiEdit that turns hooks off, or moves this plugin\'s entry, is denied', async ($, on) => {
+  owner(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  settingsFile(on)
+  const call = (input: Record<string, unknown>) => $.tool.call({ file_path: SETTINGS_FILE, ...input } as any)
+  expect((await call({ tool: 'Edit', old_string: '"model": "a"', new_string: '"model": "a",\n  "disableAllHooks": true' })).deny).toContain('settings')
+  expect((await call({ tool: 'MultiEdit', edits: [{ old_string: '"model": "a"', new_string: '"model": "a",\n  "allowManagedHooksOnly": true' }] })).deny).toContain('settings')
+  expect((await call({ tool: 'Edit', old_string: '"enabledPlugins"', new_string: '"enabledPluginsOff"' })).deny).toContain('settings')
+  expect((await call({ tool: 'Write', content: SETTINGS_TEXT.replace('"model": "a"', '"model": "a", "disableAllHooks": true') })).deny).toContain('settings')
+  expect((await $.tool.call({ tool: 'Bash', command: "jq '.enabledPlugins = {}' " + SETTINGS_FILE + ' > /tmp/s.json && mv /tmp/s.json ' + SETTINGS_FILE })).deny).toContain('settings')
+})
+
+test('self-protection: a settings Edit is judged on the text it leaves, replace_all included', async ($, on) => {
+  owner(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  settingsFile(on, JSON.stringify({ note: 'true', enabledPlugins: { 'barmkin-mod@emasoft-barmkin': true } }, null, 2))
+  const edit = (replace_all: boolean) => $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: 'true', new_string: 'false', replace_all })
+  // One occurrence changes only the note; every occurrence reaches this plugin's entry.
+  expect((await edit(false)).deny).toBeUndefined()
+  expect((await edit(true)).deny).toContain('settings')
+})
+
+test('self-protection: a settings Edit it cannot check is denied', async ($, on) => {
+  owner(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  settingsFile(on)
+  // The text to replace is not in the file, so the edit cannot be applied to judge it.
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"absent": 1', new_string: '"x": 2' })).deny).toContain('settings')
+})
+
+test('self-protection: a settings file it cannot read denies the Edit', async ($, on) => {
+  owner(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ deny: 'unreadable' }))
+  expect((await $.tool.call({ tool: 'Edit', file_path: SETTINGS_FILE, old_string: '"model": "a"', new_string: '"model": "b"' })).deny).toBeDefined()
 })
 
 test('self-protection follows a relative path through the working directory', async ($, on) => {

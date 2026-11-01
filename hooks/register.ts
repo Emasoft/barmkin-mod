@@ -109,6 +109,8 @@ import {
   isSwitchCommandSkill,
   inputStrings,
   SETTINGS_WRITE_REASON,
+  SETTINGS_EDIT_UNCHECKED_REASON,
+  editedText,
   SWITCH_COMMAND_REASON,
   mcpSelfProtectionReason,
 } from './lib/self-protection'
@@ -1677,7 +1679,7 @@ async function targetSpellings($: any, raw: string): Promise<string[]> {
   return spellings
 }
 
-// The current text of a settings file a Write would replace, or null when there
+// The current text of a settings file a Write or an Edit would change, or null when there
 // is none. A read that fails throws, so the hook's catch denies the write.
 async function currentText($: any, path: string): Promise<string | null> {
   if (!(await $.fs.exists(path))) return null
@@ -1695,6 +1697,16 @@ async function selfProtectionReason($: any, e: any): Promise<string | null> {
     for (const path of spellings) {
       const reason = fileSelfProtectionReason(tool, e, path)
       if (reason) return reason
+    }
+    // An Edit is judged as the Write it amounts to: its edits applied to the
+    // current text, then the same entry diff. Matching the edit strings alone
+    // (fileSelfProtectionReason) let a one-key edit through: a
+    // `"disableAllHooks": true` names no plugin, nor does renaming enabledPlugins.
+    if ((tool === 'Edit' || tool === 'MultiEdit') && spellings.some((p) => isSettingsFile(p))) {
+      const current = await currentText($, raw)
+      const after = editedText(current, tool, e)
+      if (after === null) return SETTINGS_EDIT_UNCHECKED_REASON
+      if (writeChangesProtectedEntries(current, after)) return SETTINGS_WRITE_REASON
     }
     // A Write replaces the whole file, so whether it changes this plugin's
     // settings entries is told against the text it replaces.
