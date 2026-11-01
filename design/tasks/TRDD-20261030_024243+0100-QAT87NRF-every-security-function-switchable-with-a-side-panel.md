@@ -4,7 +4,7 @@ title: Every security function switchable, with a side panel
 column: testing
 status: tasked
 created: 2026-10-30T02:42:43+0100
-updated: 2026-10-30T03:38:59+0100
+updated: 2026-11-01T03:34:53+0100
 current-owner: main-agent@barmkin-mod
 created-by: main-agent@barmkin-mod
 task-type: feature
@@ -16,7 +16,7 @@ approved: true
 approval-judge: main-agent@barmkin-mod
 approval-datetime: 2026-10-30T02:42:43+0100
 release-via: none
-implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e]
+implementation-commits: [d7c6a64, ecb8e61, 18842cf, 569d387, a38c037, e2d144f, 87de54e, dce355a, 771fbb3, 36f3b67, 6602d9a, 517a97b, 5a3635a, 12b2f2b]
 ---
 
 # Every security function switchable, with a side panel
@@ -51,8 +51,14 @@ Every security function barmkin-mod has today gets its own named switch, on by d
 - Found in step 1, live check on Claude Code 2.1.314: Claude Code places a pane nobody asked for only at 144 columns or more ("waits unplaced (unasked below 144 columns ...)"), so in a narrower terminal the panel opens at session start only once widened or on /barmkin-mod-panel.
 - Found in step 1: in an 80x30 terminal the 26-row list does not fit, so Up and Down scroll the pane; Tab moves from row to row and Enter flips the focused row. With the panel open there, the amber "switched off" line was not on screen; the bands of the other mods left the screen at the same moment, so the pane appears to take the band rows at that height (inferred, not settled).
 - Found in step 1: the harness itself refuses a Skill tool call of /barmkin-mod-rule ("a built-in CLI command, not a skill"), so the origin check in the command is reached by a person or by a child session; a headless `claude -p "/barmkin-mod-rule ..."` arrives with origin sdk and is refused.
-- Found in step 1: self-protection errs toward denying. Denied while it is on: rm or mv of any folder named .claude (a project one too), a shell command naming barmkin-mod and a settings file even to read it, a settings Write over a file larger than 4 MiB, and an MCP call whose input names a protected path. Not covered: mv or rm of settings.json or installed_plugins.json without naming the plugin, and a configuration folder not named .claude.
+- Found in step 1: self-protection errs toward denying. Denied while it is on: rm or mv of any folder named .claude (a project one too), a shell command naming barmkin-mod and a settings file even to read it, a settings Write over a file larger than 4 MiB, and an MCP call whose input names a protected path. Not covered then: mv or rm of settings.json or installed_plugins.json without naming the plugin (covered since the review round: a shell write, move or removal of a Claude Code settings file is denied whatever it names), and a configuration folder not named .claude (still not covered).
 - Found in step 1: command replies show the plugin name twice ("barmkin-mod: barmkin-mod: ..."), because Claude Code prefixes the plugin name and the texts start with it too, as the 0.2.2 status and clear-taint texts already did. Cosmetic, left for a later card.
+- Found in the step-1 review (round 2): within one process the switch fingerprint now lasts through /clear, /resume and /branch, but a new session, a `claude -p` child or a scheduled run takes the switch store as written. No mod-side fingerprint can close that: whatever the account can write on disk, a shell can write too. So a store edited through a call self-protection does not recognise takes effect in every later session.
+- Found in the step-1 review (round 2): shell writes of settings files are recognised by their usual shapes (a redirection, tee, cp, mv, rm, dd, an in-place sed, perl or yq, an interpreter's inline code, find -exec, xargs). A script file that writes one, a write of a bare settings.json after a cd that names no settings key, and a find over the whole configuration folder that changes files without a name pattern are not recognised.
+- Found in the step-1 review (round 2): an MCP write of a settings file is denied only when its input names the file with this plugin or its marketplace, or under .claude with a key that enables plugins or turns hooks off; a write that drops enabledPlugins without naming any of them is not recognised.
+- Found in the step-1 review (round 2): a child session started with `claude --safe-mode -p` or `claude --bare -p` runs no installed mod; self-protection does not stop it (a permission rule that denies those commands can).
+- Found in the step-1 review (round 2): which origin the Desktop app gives a command typed there is not measured (owner's Desktop check, box 4). Another plugin cannot rewrite the origin: the engine skips a hook that passes on an origin it did not set (measured with the test kit).
+- Found in the step-1 review (round 2): a --plugin-dir copy is not protected by path, since its folder is the developer's working tree. An installed copy is protected under the marketplace its folder names and under emasoft-barmkin.
 
 ## Acceptance
 
