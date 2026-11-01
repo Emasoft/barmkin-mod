@@ -52,6 +52,21 @@ export function marketplaceFromRoot(root: unknown): string | null {
   return null
 }
 
+// The configuration folder of an installed copy, from its folder
+// (`<config>/plugins/cache/<marketplace>/barmkin-mod/<version>`), or null for a
+// copy anywhere else.
+export function configDirFromRoot(root: unknown): string | null {
+  if (typeof root !== 'string') return null
+  const absolute = root.startsWith('/')
+  const segments = root.replace(/\\/g, '/').split('/').filter(Boolean)
+  for (let i = 0; i + 3 < segments.length; i++) {
+    if (segments[i] === 'plugins' && segments[i + 1] === 'cache' && segments[i + 3] === PROTECTED_PLUGIN) {
+      return (absolute ? '/' : '') + segments.slice(0, i).join('/')
+    }
+  }
+  return null
+}
+
 // A mention of this plugin or of a marketplace it is protected under.
 function mentionsUs(text: string): boolean {
   const folded = text.toLowerCase()
@@ -390,6 +405,10 @@ export function fileSelfProtectionReason(tool: string, input: Record<string, unk
 export const SETTINGS_WRITE_REASON = denyReason("changes barmkin-mod's entries, or a setting that turns hooks off, in a settings file")
 export const SETTINGS_EDIT_UNCHECKED_REASON = denyReason(
   'edits a settings file in a way that cannot be checked (the edit cannot be applied to the file as it is)',
+)
+// A file tool target that may be a hard link to a settings file (review R2).
+export const SETTINGS_LINK_REASON = denyReason(
+  'edits a file with the size and modification time of a Claude Code settings file, so it may be a second name (a hard link) for it',
 )
 const SHELL_SETTINGS_REASON = denyReason(
   'writes, moves or removes a Claude Code settings file from the shell, where the change cannot be checked (the Write and Edit tools can be)',
